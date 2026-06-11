@@ -11,8 +11,38 @@
  *  - Score entries per student
  */
 
-import React, { createContext, useContext, useState, useCallback } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
 import { nanoid } from "nanoid";
+
+// ─── localStorage helpers ─────────────────────────────────────────────────────
+
+const STORAGE_KEY = "sqgs_data_v1";
+
+interface PersistedData {
+  teachers: Teacher[];
+  natures: AssessmentNature[];
+  weightingSchemes: WeightingScheme[];
+  subjects: Subject[];
+  schoolYears: SchoolYear[];
+}
+
+function loadFromStorage(): PersistedData | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as PersistedData;
+  } catch {
+    return null;
+  }
+}
+
+function saveToStorage(data: PersistedData) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // storage full or unavailable — silently ignore
+  }
+}
 
 // ─── Core types ───────────────────────────────────────────────────────────────
 
@@ -335,11 +365,19 @@ const SEED_YEARS: SchoolYear[] = [
 const DataContext = createContext<DataContextType | null>(null);
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
-  const [teachers, setTeachers] = useState<Teacher[]>(SEED_TEACHERS);
-  const [natures, setNatures] = useState<AssessmentNature[]>(SEED_NATURES);
-  const [weightingSchemes, setWeightingSchemes] = useState<WeightingScheme[]>(SEED_WEIGHTING);
-  const [subjects, setSubjects] = useState<Subject[]>(SEED_SUBJECTS);
-  const [schoolYears, setSchoolYears] = useState<SchoolYear[]>(SEED_YEARS);
+  // Load from localStorage on first render; fall back to seed data
+  const persisted = loadFromStorage();
+
+  const [teachers, setTeachers] = useState<Teacher[]>(persisted?.teachers ?? SEED_TEACHERS);
+  const [natures, setNatures] = useState<AssessmentNature[]>(persisted?.natures ?? SEED_NATURES);
+  const [weightingSchemes, setWeightingSchemes] = useState<WeightingScheme[]>(persisted?.weightingSchemes ?? SEED_WEIGHTING);
+  const [subjects, setSubjects] = useState<Subject[]>(persisted?.subjects ?? SEED_SUBJECTS);
+  const [schoolYears, setSchoolYears] = useState<SchoolYear[]>(persisted?.schoolYears ?? SEED_YEARS);
+
+  // Persist to localStorage whenever any state changes
+  useEffect(() => {
+    saveToStorage({ teachers, natures, weightingSchemes, subjects, schoolYears });
+  }, [teachers, natures, weightingSchemes, subjects, schoolYears]);
 
   // ── Mutation helpers ──────────────────────────────────────────────────────
 

@@ -1988,10 +1988,19 @@ function BackupTab() {
 
   const handleImport = () => {
     try {
-      JSON.parse(importText); // validate JSON
+      const parsed = JSON.parse(importText);
+      // Validate basic structure
+      if (!parsed.schoolYears || !parsed.subjects) {
+        toast.error(lang === "zh" ? "JSON 格式無效" : "Invalid JSON structure");
+        return;
+      }
+      // Write directly to localStorage then reload
+      localStorage.setItem("sqgs_data_v1", JSON.stringify(parsed));
       setImportText("");
       setShowImportConfirm(false);
       toast.success(t("parseSuccess"));
+      // Reload to re-initialise DataContext from the new localStorage data
+      setTimeout(() => window.location.reload(), 800);
     } catch {
       toast.error(t("parseError"));
     }
