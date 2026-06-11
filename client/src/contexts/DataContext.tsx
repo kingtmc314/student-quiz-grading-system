@@ -11,10 +11,11 @@
  *  - Score entries per student
  */
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
 import { nanoid } from "nanoid";
+import { loadAppState, saveAppState } from "@/lib/supabase";
 
-// ─── localStorage helpers ─────────────────────────────────────────────────────
+// ─── Persistence helpers (Supabase cloud + localStorage fallback) ─────────────
 
 const STORAGE_KEY = "sqgs_data_v1";
 
@@ -26,7 +27,7 @@ interface PersistedData {
   schoolYears: SchoolYear[];
 }
 
-function loadFromStorage(): PersistedData | null {
+function loadFromLocalStorage(): PersistedData | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
@@ -36,7 +37,7 @@ function loadFromStorage(): PersistedData | null {
   }
 }
 
-function saveToStorage(data: PersistedData) {
+function saveToLocalStorage(data: PersistedData) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch {
@@ -365,18 +366,45 @@ const SEED_YEARS: SchoolYear[] = [
 const DataContext = createContext<DataContextType | null>(null);
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
-  // Load from localStorage on first render; fall back to seed data
-  const persisted = loadFromStorage();
+  // Start with localStorage data (instant load) then hydrate from Supabase
+  const localData = loadFromLocalStorage();
 
-  const [teachers, setTeachers] = useState<Teacher[]>(persisted?.teachers ?? SEED_TEACHERS);
-  const [natures, setNatures] = useState<AssessmentNature[]>(persisted?.natures ?? SEED_NATURES);
-  const [weightingSchemes, setWeightingSchemes] = useState<WeightingScheme[]>(persisted?.weightingSchemes ?? SEED_WEIGHTING);
-  const [subjects, setSubjects] = useState<Subject[]>(persisted?.subjects ?? SEED_SUBJECTS);
-  const [schoolYears, setSchoolYears] = useState<SchoolYear[]>(persisted?.schoolYears ?? SEED_YEARS);
+  const [teachers, setTeachers] = useState<Teacher[]>(localData?.teachers ?? SEED_TEACHERS);
+  const [natures, setNatures] = useState<AssessmentNature[]>(localData?.natures ?? SEED_NATURES);
+  const [weightingSchemes, setWeightingSchemes] = useState<WeightingScheme[]>(localData?.weightingSchemes ?? SEED_WEIGHTING);
+  const [subjects, setSubjects] = useState<Subject[]>(localData?.subjects ?? SEED_SUBJECTS);
+  const [schoolYears, setSchoolYears] = useState<SchoolYear[]>(localData?.schoolYears ?? SEED_YEARS);
 
-  // Persist to localStorage whenever any state changes
+  // Track whether we've loaded from Supabase yet
+  const hydrated = useRef(false);
+
+  // On mount: load from Supabase and override local state
   useEffect(() => {
-    saveToStorage({ teachers, natures, weightingSchemes, subjects, schoolYears });
+    loadAppState().then(remote => {
+      if (!remote) return; // no remote data yet — keep local/seed
+      const d = remote as unknown as PersistedData;
+      if (d.teachers)        setTeachers(d.teachers);
+      if (d.natures)         setNatures(d.natures);
+      if (d.weightingSchemes) setWeightingSchemes(d.weightingSchemes);
+      if (d.subjects)        setSubjects(d.subjects);
+      if (d.schoolYears)     setSchoolYears(d.schoolYears);
+      hydrated.current = true;
+    });
+  }, []);
+
+  // Debounce ref for Supabase saves
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Persist to both localStorage and Supabase whenever any state changes
+  useEffect(() => {
+    const data: PersistedData = { teachers, natures, weightingSchemes, subjects, schoolYears };
+    // Always save to localStorage immediately (offline fallback)
+    saveToLocalStorage(data);
+    // Debounce Supabase saves to avoid hammering on rapid changes
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveAppState(data as unknown as Record<string, unknown>);
+    }, 800);
   }, [teachers, natures, weightingSchemes, subjects, schoolYears]);
 
   // ── Mutation helpers ──────────────────────────────────────────────────────

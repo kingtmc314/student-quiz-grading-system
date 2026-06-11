@@ -1986,7 +1986,7 @@ function BackupTab() {
     toast.success(t("saved"));
   };
 
-  const handleImport = () => {
+  const handleImport = async () => {
     try {
       const parsed = JSON.parse(importText);
       // Validate basic structure
@@ -1994,12 +1994,15 @@ function BackupTab() {
         toast.error(lang === "zh" ? "JSON 格式無效" : "Invalid JSON structure");
         return;
       }
-      // Write directly to localStorage then reload
+      // Save to localStorage immediately
       localStorage.setItem("sqgs_data_v1", JSON.stringify(parsed));
+      // Also save to Supabase cloud
+      const { saveAppState } = await import("@/lib/supabase");
+      await saveAppState(parsed as Record<string, unknown>);
       setImportText("");
       setShowImportConfirm(false);
       toast.success(t("parseSuccess"));
-      // Reload to re-initialise DataContext from the new localStorage data
+      // Reload to re-initialise DataContext from the restored data
       setTimeout(() => window.location.reload(), 800);
     } catch {
       toast.error(t("parseError"));
