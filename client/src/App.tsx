@@ -1,7 +1,7 @@
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
+import { Route, Switch, Router as WouterRouter } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { DataProvider } from "./contexts/DataContext";
@@ -18,7 +18,9 @@ import Grading from "./pages/Grading";
 import Results from "./pages/Results";
 
 function Router() {
+  const base = import.meta.env.BASE_URL?.replace(/\/$/, '') || '';
   return (
+    <WouterRouter base={base}>
     <DashboardLayout>
       <Switch>
         <Route path="/" component={Dashboard} />
@@ -33,7 +35,8 @@ function Router() {
         <Route path="/404" component={NotFound} />
         <Route component={NotFound} />
       </Switch>
-    </DashboardLayout>
+      </DashboardLayout>
+    </WouterRouter>
   );
 }
 
