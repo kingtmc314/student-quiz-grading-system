@@ -428,7 +428,7 @@ function StudentMgmtTab({
           <div className="space-y-3 py-2">
             <div><Label>{t("name")} * (English)</Label><Input value={subjectForm.name} onChange={e => setSubjectForm(f => ({ ...f, name: e.target.value }))} placeholder="Mathematics Extended Module 2" /></div>
             <div><Label>{t("nameCht")} (Chinese)</Label><Input value={subjectForm.nameCht} onChange={e => setSubjectForm(f => ({ ...f, nameCht: e.target.value }))} placeholder="數學延伸單元二" /></div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div><Label>{t("code")}</Label><Input value={subjectForm.code} onChange={e => setSubjectForm(f => ({ ...f, code: e.target.value }))} placeholder="M2" /></div>
               <div><Label>{t("form")}</Label><Select value={subjectForm.form} onValueChange={v => setSubjectForm(f => ({ ...f, form: v }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["S1","S2","S3","S4","S5","S6"].map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}</SelectContent></Select></div>
             </div>
@@ -732,11 +732,15 @@ function GradingTab({
           </div>
         </div>
       ) : (
-        <div className="flex-1 flex gap-0 overflow-hidden">
+        <div className="flex-1 flex flex-col md:flex-row gap-0 overflow-hidden">
           {/* ── Left: Student list ── */}
-          <div className="w-52 shrink-0 border-r border-slate-200 flex flex-col overflow-hidden bg-white">
-            <div className="px-3 py-2 border-b border-slate-200 bg-slate-50">
+          <div className="md:w-52 w-full md:shrink-0 border-b md:border-b-0 md:border-r border-slate-200 flex flex-col overflow-hidden bg-white md:max-h-full" style={{ maxHeight: '40%' }}>
+            <div className="px-3 py-2 border-b border-slate-200 bg-slate-50 hidden md:block">
               <p className="text-xs font-bold uppercase tracking-widest text-slate-500">{t("students")} ({sortedStudents.length})</p>
+            </div>
+            <div className="px-3 py-1.5 border-b border-slate-200 bg-slate-50 md:hidden flex items-center justify-between">
+              <p className="text-xs font-bold uppercase tracking-widest text-slate-500">{t("students")} ({sortedStudents.length})</p>
+              <p className="text-xs text-slate-400">{lang === "zh" ? "滞動選擇" : "Scroll to select"}</p>
             </div>
             <div className="flex-1 overflow-y-auto">
               {sortedStudents.map(student => {
@@ -844,13 +848,13 @@ function GradingTab({
         <DialogContent className="sm:max-w-md">
           <DialogHeader><DialogTitle>{t("addAssessment")}</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div><Label>{t("code")} (e.g. T1Q1)</Label><Input value={newCode} onChange={e => setNewCode(e.target.value)} placeholder="T1Q1" autoFocus /></div>
               <div><Label>{t("date")}</Label><Input type="date" value={newDate} onChange={e => setNewDate(e.target.value)} /></div>
             </div>
             <div><Label>{t("title")} (English)</Label><Input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="Quiz 1 — Differentiation" /></div>
             <div><Label>{t("titleCht")}</Label><Input value={newTitleCht} onChange={e => setNewTitleCht(e.target.value)} placeholder="小測一 — 微分" /></div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div><Label>{t("term")}</Label><Select value={newTerm} onValueChange={v => setNewTerm(v as Term)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Term 1">{t("term1")}</SelectItem><SelectItem value="Term 2">{t("term2")}</SelectItem><SelectItem value="Full Year">{t("fullYear")}</SelectItem></SelectContent></Select></div>
               <div><Label>{t("nature")}</Label><Select value={newNatureId} onValueChange={setNewNatureId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{natures.map(n => <SelectItem key={n.id} value={n.id}>{lang === "zh" ? n.nameCht : n.name}</SelectItem>)}</SelectContent></Select></div>
             </div>
@@ -869,11 +873,11 @@ function GradingTab({
 
       {/* Mark Sheet Editor Dialog */}
       <Dialog open={showMarkSheet} onOpenChange={setShowMarkSheet}>
-        <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
+        <DialogContent className="w-full max-w-3xl max-h-[90vh] flex flex-col">
           <DialogHeader><DialogTitle>{t("editMarkSheet")} — {assessTitle}</DialogTitle></DialogHeader>
-          <div className="flex-1 overflow-y-auto">
-            <MarkSheetEditor
-              items={msItems}
+        <div className="flex-1 overflow-y-auto overflow-x-hidden">
+          <MarkSheetEditor
+            items={msItems}
               setItems={setMsItems}
               topics={topics}
               lang={lang}
@@ -934,9 +938,9 @@ function MarkSheetEditorDialog({
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
+      <DialogContent className="w-full max-w-3xl max-h-[90vh] flex flex-col">
         <DialogHeader><DialogTitle>{t("editMarkSheet")} — {assessTitle}</DialogTitle></DialogHeader>
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden">
           <MarkSheetEditor items={items} setItems={setItems} topics={topics} lang={lang} parseText={parseText} setParseText={setParseText} quickCount={quickCount} setQuickCount={setQuickCount} msTab={activeTab} setMsTab={setActiveTab} t={t as (k: string) => string} />
         </div>
         <DialogFooter>
@@ -997,15 +1001,18 @@ function MarkSheetEditor({
 
   return (
     <Tabs value={msTab} onValueChange={setMsTab}>
-      <TabsList className="mb-3">
-        <TabsTrigger value="editor">{t("markScheme")}</TabsTrigger>
-        <TabsTrigger value="parse"><FileText className="w-3.5 h-3.5 mr-1" />{t("parseFromText")}</TabsTrigger>
-        <TabsTrigger value="quick"><Wand2 className="w-3.5 h-3.5 mr-1" />{t("quickGenerate")}</TabsTrigger>
-      </TabsList>
+      <div className="overflow-x-auto">
+        <TabsList className="mb-3 w-max">
+          <TabsTrigger value="editor">{t("markScheme")}</TabsTrigger>
+          <TabsTrigger value="parse"><FileText className="w-3.5 h-3.5 mr-1" />{t("parseFromText")}</TabsTrigger>
+          <TabsTrigger value="quick"><Wand2 className="w-3.5 h-3.5 mr-1" />{t("quickGenerate")}</TabsTrigger>
+        </TabsList>
+      </div>
 
       <TabsContent value="editor">
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <div className={`grid gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase tracking-wide text-slate-500 ${topics.length > 0 ? "grid-cols-[2rem_1fr_6rem_7rem_6rem_2rem_2rem]" : "grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"}`}>
+          <div className="overflow-x-auto">
+          <div className={`grid gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase tracking-wide text-slate-500 min-w-[480px] ${topics.length > 0 ? "grid-cols-[2rem_1fr_6rem_7rem_6rem_2rem_2rem]" : "grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"}`}>
             <span>#</span><span>{t("label")}</span><span className="text-center">{t("maxMark")}</span>
             {topics.length > 0 && <span className="flex items-center gap-1"><Tag className="w-3 h-3" />{t("topicTag")}</span>}
             <span className="text-center">Section?</span><span></span><span></span>
@@ -1014,7 +1021,7 @@ function MarkSheetEditor({
             <div className="py-8 text-center text-slate-400 text-sm">{t("noData")}</div>
           ) : (
             items.map((item, idx) => (
-              <div key={item.id} className={`grid gap-2 px-3 py-1.5 items-center border-b border-slate-100 last:border-0 ${topics.length > 0 ? "grid-cols-[2rem_1fr_6rem_7rem_6rem_2rem_2rem]" : "grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"} ${item.isSection ? "bg-blue-50" : idx % 2 === 0 ? "bg-white" : "bg-slate-50/50"}`}>
+              <div key={item.id} className={`grid gap-2 px-3 py-1.5 items-center border-b border-slate-100 last:border-0 min-w-[480px] ${topics.length > 0 ? "grid-cols-[2rem_1fr_6rem_7rem_6rem_2rem_2rem]" : "grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"} ${item.isSection ? "bg-blue-50" : idx % 2 === 0 ? "bg-white" : "bg-slate-50/50"}`}>
                 <span className="text-xs text-slate-400 font-mono text-center">{idx + 1}</span>
                 <Input value={item.label} onChange={e => updateItem(item.id, "label", e.target.value)} className={`h-7 text-sm font-mono ${item.isSection ? "font-bold bg-blue-50 text-blue-700" : ""}`} placeholder={item.isSection ? "Section A" : "2(a)"} />
                 <Input type="number" min={0} value={item.isSection ? "" : item.maxMark} onChange={e => updateItem(item.id, "maxMark", parseFloat(e.target.value) || 0)} disabled={item.isSection} className="h-7 text-sm font-mono text-center" placeholder="0" />
@@ -1039,6 +1046,7 @@ function MarkSheetEditor({
               <Button size="sm" variant="outline" onClick={() => addRow(true)} className="gap-1 text-xs h-7"><Plus className="w-3.5 h-3.5" />{t("sectionRow")}</Button>
             </div>
             <span className="text-xs font-mono font-bold text-slate-600">{t("total")}: {maxTotal}</span>
+          </div>
           </div>
         </div>
       </TabsContent>
@@ -1126,11 +1134,13 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
       <h2 className="text-xl font-bold text-slate-800">{lang === "zh" ? "弱點分析" : "Weakness Analysis"} — {cls.name}</h2>
 
       <Tabs defaultValue="topics">
-        <TabsList className="mb-4">
-          <TabsTrigger value="topics">{t("topicPerformance")}</TabsTrigger>
-          <TabsTrigger value="summary">{t("classSummary")}</TabsTrigger>
-          <TabsTrigger value="questions">{t("questionAnalysis")}</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto mb-4">
+          <TabsList className="w-max">
+            <TabsTrigger value="topics">{t("topicPerformance")}</TabsTrigger>
+            <TabsTrigger value="summary">{t("classSummary")}</TabsTrigger>
+            <TabsTrigger value="questions">{t("questionAnalysis")}</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="topics">
           {topics.length === 0 ? (
@@ -1743,20 +1753,33 @@ function SettingsTab() {
   ];
 
   return (
-    <div className="h-full flex overflow-hidden">
-      {/* Settings sidebar */}
-      <div className="w-48 shrink-0 border-r border-slate-200 bg-slate-50 p-3 space-y-1">
-        <p className="text-xs font-bold uppercase tracking-widest text-slate-400 px-2 mb-3">{t("settings")}</p>
-        {sections.map(s => (
-          <button key={s.id} onClick={() => setActiveSection(s.id)} className={cn("w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors", activeSection === s.id ? "bg-blue-500 text-white" : "text-slate-600 hover:bg-slate-200")}>
-            {s.label}
-          </button>
-        ))}
-        <div className="pt-4 border-t border-slate-200 mt-4">
-          <p className="text-xs font-bold uppercase tracking-widest text-slate-400 px-2 mb-2">{t("language")}</p>
-          <div className="flex gap-1">
-            <button onClick={() => setLang("en")} className={cn("flex-1 py-1.5 rounded text-xs font-semibold transition-colors", lang === "en" ? "bg-blue-500 text-white" : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200")}>EN</button>
-            <button onClick={() => setLang("zh")} className={cn("flex-1 py-1.5 rounded text-xs font-semibold transition-colors", lang === "zh" ? "bg-blue-500 text-white" : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200")}>中</button>
+    <div className="h-full flex flex-col md:flex-row overflow-hidden">
+      {/* Settings sidebar — horizontal on mobile, vertical on desktop */}
+      <div className="md:w-48 md:shrink-0 border-b md:border-b-0 md:border-r border-slate-200 bg-slate-50 md:p-3">
+        {/* Mobile: horizontal scroll tabs */}
+        <div className="md:hidden overflow-x-auto">
+          <div className="flex gap-1 p-2 w-max">
+            {sections.map(s => (
+              <button key={s.id} onClick={() => setActiveSection(s.id)} className={cn("px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors", activeSection === s.id ? "bg-blue-500 text-white" : "text-slate-600 bg-white border border-slate-200 hover:bg-slate-100")}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {/* Desktop: vertical sidebar */}
+        <div className="hidden md:block space-y-1">
+          <p className="text-xs font-bold uppercase tracking-widest text-slate-400 px-2 mb-3">{t("settings")}</p>
+          {sections.map(s => (
+            <button key={s.id} onClick={() => setActiveSection(s.id)} className={cn("w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors", activeSection === s.id ? "bg-blue-500 text-white" : "text-slate-600 hover:bg-slate-200")}>
+              {s.label}
+            </button>
+          ))}
+          <div className="pt-4 border-t border-slate-200 mt-4">
+            <p className="text-xs font-bold uppercase tracking-widest text-slate-400 px-2 mb-2">{t("language")}</p>
+            <div className="flex gap-1">
+              <button onClick={() => setLang("en")} className={cn("flex-1 py-1.5 rounded text-xs font-semibold transition-colors", lang === "en" ? "bg-blue-500 text-white" : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200")}>EN</button>
+              <button onClick={() => setLang("zh")} className={cn("flex-1 py-1.5 rounded text-xs font-semibold transition-colors", lang === "zh" ? "bg-blue-500 text-white" : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200")}>中</button>
+            </div>
           </div>
         </div>
       </div>
@@ -1911,7 +1934,7 @@ function SettingsTab() {
           <DialogHeader><DialogTitle>{editWeightingId ? t("edit") : t("addWeightingScheme")}</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
             <div><Label>{t("schemeLabel")}</Label><Input value={weightingForm.label} onChange={e => setWeightingForm(f => ({ ...f, label: e.target.value }))} autoFocus /></div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div><Label>{t("form")}</Label><Select value={weightingForm.form} onValueChange={v => setWeightingForm(f => ({ ...f, form: v }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["S1","S2","S3","S4","S5","S6"].map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}</SelectContent></Select></div>
               <div><Label>{t("examPercentage")} (%)</Label><Input type="number" min={0} max={100} value={weightingForm.examPercentage} onChange={e => setWeightingForm(f => ({ ...f, examPercentage: parseInt(e.target.value) || 0 }))} /></div>
             </div>
@@ -2116,95 +2139,192 @@ function ContextSelector({
 
 // ─── Main App Shell ───────────────────────────────────────────────────────────
 export default function MainApp() {
-  const { lang } = useI18n();
+  const { lang, setLang } = useI18n();
   const [activeTab, setActiveTab] = useState<TabId>("students");
   const [yearId, setYearId] = useState("");
   const [subjectId, setSubjectId] = useState("");
   const [classId, setClassId] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Desktop: collapsed icon-only sidebar; Mobile: hidden by default
+  const [desktopCollapsed, setDesktopCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   // Mark sheet editor overlay
   const [markSheetTarget, setMarkSheetTarget] = useState<{ yearId: string; subjectId: string; classId: string; assessmentId: string } | null>(null);
 
   const contextProps = { yearId, subjectId, classId, setYearId, setSubjectId, setClassId };
 
+  const handleTabClick = (id: TabId) => {
+    setActiveTab(id);
+    setMobileOpen(false); // close mobile drawer on tab select
+  };
+
+  const SidebarInner = ({ collapsed }: { collapsed: boolean }) => (
+    <div className="flex flex-col h-full" style={{ background: "#1a2035" }}>
+      {/* Logo row */}
+      <div className="flex items-center gap-2.5 px-3 py-3.5 border-b border-[#2a3352] shrink-0">
+        <div className="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center shrink-0">
+          <GraduationCap className="w-4 h-4 text-white" />
+        </div>
+        {!collapsed && (
+          <div className="flex-1 min-w-0">
+            <p className="text-white font-bold text-sm leading-tight truncate">{lang === "zh" ? "數學成績分析" : "Maths Analytics"}</p>
+            <p className="text-slate-400 text-[10px]">{APP_VERSION}</p>
+          </div>
+        )}
+        {/* Desktop collapse toggle — hidden on mobile */}
+        <button
+          onClick={() => setDesktopCollapsed(v => !v)}
+          className="hidden md:flex p-1 rounded text-slate-400 hover:text-white hover:bg-[#2a3352] transition-colors shrink-0"
+          title={collapsed ? "Expand" : "Collapse"}
+        >
+          <Menu className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Context selectors — only when expanded */}
+      {!collapsed && <ContextSelector {...contextProps} />}
+
+      {/* Tab nav */}
+      <nav className="flex-1 overflow-y-auto py-2 space-y-0.5 px-2">
+        {TABS.map(tab => {
+          const Icon = tab.icon;
+          const isActive = activeTab === tab.id;
+          const label = lang === "zh" ? tab.labelZh : tab.labelEn;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => handleTabClick(tab.id)}
+              className={cn(
+                "w-full flex items-center gap-2.5 rounded-lg font-medium transition-all duration-150",
+                collapsed ? "justify-center px-2 py-2.5" : "px-2.5 py-2",
+                isActive
+                  ? "bg-blue-500 text-white shadow-sm"
+                  : "text-slate-400 hover:text-white hover:bg-[#2a3352]"
+              )}
+              title={collapsed ? label : undefined}
+            >
+              <Icon className="w-4 h-4 shrink-0" />
+              {!collapsed && <span className="truncate text-xs">{label}</span>}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* Language toggle */}
+      <div className="px-2 py-2 border-t border-[#2a3352] shrink-0">
+        <button
+          onClick={() => setLang(lang === "en" ? "zh" : "en")}
+          className={cn(
+            "w-full flex items-center gap-2 text-slate-400 hover:text-white hover:bg-[#2a3352] rounded-lg transition-colors text-xs font-semibold py-2",
+            collapsed ? "justify-center px-2" : "px-2.5"
+          )}
+        >
+          <Languages className="w-4 h-4 shrink-0" />
+          {!collapsed && <span>{lang === "en" ? "繁體中文" : "English"}</span>}
+        </button>
+      </div>
+
+      {/* Footer text */}
+      {!collapsed && (
+        <div className="px-3 py-2 border-t border-[#2a3352] shrink-0">
+          <p className="text-[10px] text-slate-500 text-center">{lang === "zh" ? "學生數學成績分析系統" : "Student Maths Performance Analytics"}</p>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="h-screen flex overflow-hidden bg-slate-100">
-      {/* ── Sidebar ── */}
-      <aside className={cn("flex flex-col shrink-0 transition-all duration-200 overflow-hidden", sidebarOpen ? "w-52" : "w-14")} style={{ background: "#1a2035" }}>
-        {/* Logo */}
-        <div className="flex items-center gap-2.5 px-3 py-3.5 border-b border-[#2a3352]">
-          <div className="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center shrink-0">
-            <GraduationCap className="w-4.5 h-4.5 text-white" />
-          </div>
-          {sidebarOpen && (
-            <div className="flex-1 min-w-0">
-              <p className="text-white font-bold text-sm leading-tight truncate">{lang === "zh" ? "數學成績分析" : "Maths Analytics"}</p>
-              <p className="text-slate-400 text-[10px]">{APP_VERSION}</p>
-            </div>
-          )}
-          <button onClick={() => setSidebarOpen(v => !v)} className="p-1 rounded text-slate-400 hover:text-white hover:bg-[#2a3352] transition-colors shrink-0">
-            <Menu className="w-4 h-4" />
-          </button>
-        </div>
 
-        {/* Context selectors */}
-        {sidebarOpen && (
-          <ContextSelector {...contextProps} />
+      {/* ── Mobile overlay ── */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 md:hidden"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
+      {/* ── Mobile drawer ── */}
+      <aside
+        className={cn(
+          "fixed top-0 left-0 h-full z-50 w-64 flex flex-col transition-transform duration-200 md:hidden",
+          mobileOpen ? "translate-x-0" : "-translate-x-full"
         )}
+        style={{ background: "#1a2035" }}
+      >
+        {/* Mobile close button */}
+        <button
+          onClick={() => setMobileOpen(false)}
+          className="absolute top-3 right-3 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-[#2a3352] transition-colors z-10"
+        >
+          <X className="w-4 h-4" />
+        </button>
+        <SidebarInner collapsed={false} />
+      </aside>
 
-        {/* Tab buttons */}
-        <nav className="flex-1 overflow-y-auto py-2 space-y-0.5 px-2">
-          {TABS.map(tab => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            const label = lang === "zh" ? tab.labelZh : tab.labelEn;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={cn(
-                  "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-all duration-150",
-                  isActive
-                    ? "bg-blue-500 text-white shadow-sm"
-                    : "text-slate-400 hover:text-white hover:bg-[#2a3352]"
-                )}
-                title={!sidebarOpen ? label : undefined}
-              >
-                <Icon className="w-4 h-4 shrink-0" />
-                {sidebarOpen && <span className="truncate text-xs">{label}</span>}
-              </button>
-            );
-          })}
-        </nav>
-
-        {/* Bottom: version */}
-        {sidebarOpen && (
-          <div className="px-3 py-2 border-t border-[#2a3352]">
-            <p className="text-[10px] text-slate-500 text-center">{lang === "zh" ? "學生數學成績分析系統" : "Student Maths Performance Analytics"}</p>
-          </div>
+      {/* ── Desktop sidebar ── */}
+      <aside
+        className={cn(
+          "hidden md:flex flex-col shrink-0 transition-all duration-200 overflow-hidden",
+          desktopCollapsed ? "w-14" : "w-52"
         )}
+        style={{ background: "#1a2035" }}
+      >
+        <SidebarInner collapsed={desktopCollapsed} />
       </aside>
 
       {/* ── Main content ── */}
-      <main className="flex-1 flex flex-col overflow-hidden bg-white">
+      <main className="flex-1 flex flex-col overflow-hidden bg-white min-w-0">
         {/* Top bar */}
-        <div className="h-10 shrink-0 border-b border-slate-200 bg-white flex items-center px-4 gap-3">
-          <div className="flex-1">
-            <p className="text-sm font-bold text-slate-700">
+        <div className="h-11 shrink-0 border-b border-slate-200 bg-white flex items-center px-3 gap-2">
+          {/* Mobile hamburger */}
+          <button
+            className="md:hidden p-1.5 rounded-md text-slate-500 hover:bg-slate-100 shrink-0"
+            onClick={() => setMobileOpen(o => !o)}
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+
+          {/* Title */}
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-slate-700 truncate">
               {lang === "zh" ? TABS.find(t => t.id === activeTab)?.labelZh : TABS.find(t => t.id === activeTab)?.labelEn}
             </p>
           </div>
+
+          {/* Breadcrumb — hide on very small screens */}
           {yearId && subjectId && classId && (
-            <div className="flex items-center gap-1.5 text-xs text-slate-500">
-              <span className="font-mono font-semibold text-slate-700">{yearId}</span>
+            <div className="hidden sm:flex items-center gap-1 text-xs text-slate-500 shrink-0">
+              <span className="font-semibold text-slate-700 truncate max-w-[80px]">{yearId}</span>
               <ChevronRight className="w-3 h-3" />
-              <span className="font-semibold text-slate-700">{subjectId}</span>
+              <span className="font-semibold text-slate-700 truncate max-w-[80px]">{subjectId}</span>
               <ChevronRight className="w-3 h-3" />
-              <span className="font-semibold text-slate-700">{classId}</span>
+              <span className="font-semibold text-slate-700 truncate max-w-[60px]">{classId}</span>
             </div>
           )}
+
+          {/* Mobile language toggle */}
+          <button
+            onClick={() => setLang(lang === "en" ? "zh" : "en")}
+            className="md:hidden flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-blue-600 transition-colors px-2 py-1 rounded border border-slate-200 shrink-0"
+          >
+            <Languages className="w-3.5 h-3.5" />
+            {lang === "en" ? "中文" : "EN"}
+          </button>
         </div>
+
+        {/* Mobile context bar - shown when sidebar is hidden and no class selected */}
+        {(!yearId || !subjectId || !classId) && activeTab !== "students" && activeTab !== "settings" && activeTab !== "backup" && (
+          <div className="md:hidden px-3 py-2 bg-amber-50 border-b border-amber-200 flex items-center gap-2">
+            <span className="text-xs text-amber-700 font-medium">{lang === "zh" ? "請先點擊左上角選擇學年、科目及班別" : "Tap ☰ to select School Year, Subject & Class"}</span>
+            <button
+              onClick={() => setMobileOpen(true)}
+              className="ml-auto text-xs font-bold text-amber-700 bg-amber-100 border border-amber-300 px-2 py-1 rounded-md"
+            >
+              ☰ {lang === "zh" ? "選擇" : "Select"}
+            </button>
+          </div>
+        )}
 
         {/* Tab content */}
         <div className="flex-1 overflow-hidden">
