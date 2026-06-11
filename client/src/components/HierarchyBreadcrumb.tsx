@@ -19,10 +19,11 @@ export default function HierarchyBreadcrumb({ items, className }: HierarchyBread
         <span key={i} className="flex items-center gap-1">
           {i > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
           {item.href ? (
-            <Link href={item.href}>
-              <a className="text-blue-600 hover:text-blue-800 hover:underline font-medium transition-colors">
-                {item.label}
-              </a>
+            <Link
+              href={item.href}
+              className="text-blue-600 hover:text-blue-800 hover:underline font-medium transition-colors"
+            >
+              {item.label}
             </Link>
           ) : (
             <span className="text-slate-600 font-semibold">{item.label}</span>

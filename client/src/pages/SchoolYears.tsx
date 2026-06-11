@@ -61,10 +61,11 @@ export default function SchoolYears() {
                 </p>
               </div>
               <div className="flex items-center gap-1">
-                <Link href={`/school-years/${year.id}/subjects`}>
-                  <a className="p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors">
-                    <ArrowRight className="w-4 h-4" />
-                  </a>
+                <Link
+                  href={`/school-years/${year.id}/subjects`}
+                  className="p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                >
+                  <ArrowRight className="w-4 h-4" />
                 </Link>
                 <button
                   onClick={() => setDeleteId(year.id)}

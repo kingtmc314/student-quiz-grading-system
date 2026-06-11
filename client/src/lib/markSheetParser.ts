@@ -31,14 +31,14 @@ export function parseMarkSheetText(raw: string): MarkItem[] {
     // Question rows: label followed by optional mark value
     const match = trimmed.match(/^([^\s]+)\s+(\d+(?:\.\d+)?)$/);
     if (match) {
-      items.push({ id: nanoid(), label: match[1], maxMark: parseFloat(match[2]) });
+      items.push({ id: nanoid(), label: match[1], maxMark: parseFloat(match[2]), isSection: false });
       continue;
     }
 
     // Label only (no marks yet)
     const labelOnly = trimmed.match(/^([^\s]+)$/);
     if (labelOnly) {
-      items.push({ id: nanoid(), label: labelOnly[1], maxMark: 0 });
+      items.push({ id: nanoid(), label: labelOnly[1], maxMark: 0, isSection: false });
     }
   }
 
@@ -54,7 +54,7 @@ export function parseMarkSheetText(raw: string): MarkItem[] {
 export function generateDefaultMarkSheet(questionCount: number): MarkItem[] {
   const items: MarkItem[] = [];
   for (let i = 1; i <= questionCount; i++) {
-    items.push({ id: nanoid(), label: String(i), maxMark: 0 });
+    items.push({ id: nanoid(), label: String(i), maxMark: 0, isSection: false });
   }
   return items;
 }

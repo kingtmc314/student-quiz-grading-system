@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Link, useParams } from "wouter";
-import { Plus, Trash2, ArrowRight, BookOpen } from "lucide-react";
+import { Plus, Trash2, ArrowRight, BookOpen, Tags } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 import { useData } from "@/contexts/DataContext";
 import { useI18n } from "@/contexts/I18nContext";
 import HierarchyBreadcrumb from "@/components/HierarchyBreadcrumb";
@@ -11,28 +12,32 @@ import { toast } from "sonner";
 
 export default function Subjects() {
   const { yearId } = useParams<{ yearId: string }>();
-  const { getSchoolYear, addSubject, deleteSubject } = useData();
-  const { t } = useI18n();
+  const { getSchoolYear, subjects, addSubjectToYear, removeSubjectFromYear, getGlobalSubject } = useData();
+  const { t, lang } = useI18n();
   const year = getSchoolYear(yearId);
   const [showAdd, setShowAdd] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [selectedSubjectId, setSelectedSubjectId] = useState<string>("");
+  const [deleteSubjectId, setDeleteSubjectId] = useState<string | null>(null);
 
   if (!year) return <div className="text-slate-400 text-sm">{t("noData")}</div>;
 
+  // Subjects already linked to this year
+  const linkedSubjectIds = new Set(year.subjects.map(ys => ys.subjectId));
+  // Available to add
+  const availableSubjects = subjects.filter(s => !linkedSubjectIds.has(s.id));
+
   const handleAdd = () => {
-    const name = newName.trim();
-    if (!name) return;
-    addSubject(yearId, name);
-    setNewName("");
+    if (!selectedSubjectId) return;
+    addSubjectToYear(yearId, selectedSubjectId);
+    setSelectedSubjectId("");
     setShowAdd(false);
     toast.success(t("saved"));
   };
 
   const handleDelete = () => {
-    if (!deleteId) return;
-    deleteSubject(yearId, deleteId);
-    setDeleteId(null);
+    if (!deleteSubjectId) return;
+    removeSubjectFromYear(yearId, deleteSubjectId);
+    setDeleteSubjectId(null);
     toast.success(t("deleted"));
   };
 
@@ -58,50 +63,82 @@ export default function Subjects() {
         <div className="rounded-xl border border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">{t("noData")}</div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {year.subjects.map((sub) => (
-            <div key={sub.id} className="rounded-xl border border-slate-200 bg-white p-4 flex items-center gap-3 hover:border-blue-200 hover:shadow-sm transition-all">
-              <div className="w-10 h-10 rounded-lg bg-indigo-50 flex items-center justify-center shrink-0">
-                <BookOpen className="w-5 h-5 text-indigo-600" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-bold text-slate-800 truncate">{sub.name}</p>
-                <p className="text-xs text-slate-500">{sub.classes.length} {t("classes")}</p>
-              </div>
-              <div className="flex items-center gap-1">
-                <Link href={`/school-years/${yearId}/subjects/${sub.id}/classes`}>
-                  <a className="p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors">
+          {year.subjects.map((ys) => {
+            const sub = getGlobalSubject(ys.subjectId);
+            if (!sub) return null;
+            const displayName = lang === "zh" ? sub.nameCht : sub.name;
+            return (
+              <div key={ys.subjectId} className="rounded-xl border border-slate-200 bg-white p-4 flex items-start gap-3 hover:border-blue-200 hover:shadow-sm transition-all">
+                <div className="w-10 h-10 rounded-lg bg-indigo-50 flex items-center justify-center shrink-0 mt-0.5">
+                  <BookOpen className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-slate-800 truncate">{displayName}</p>
+                  <p className="text-xs text-slate-400 font-mono">{sub.code} · {sub.form}</p>
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <Badge variant="secondary" className="text-xs gap-1">
+                      <Tags className="w-3 h-3" />{sub.topics.length} {t("topics")}
+                    </Badge>
+                    <span className="text-xs text-slate-400">{ys.classes.length} {t("classes")}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <Link
+                    href={`/school-years/${yearId}/subjects/${ys.subjectId}/classes`}
+                    className="p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                  >
                     <ArrowRight className="w-4 h-4" />
-                  </a>
-                </Link>
-                <button onClick={() => setDeleteId(sub.id)} className="p-1.5 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors">
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                  </Link>
+                  <button
+                    onClick={() => setDeleteSubjectId(ys.subjectId)}
+                    className="p-1.5 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
+      {/* Add subject dialog */}
       <Dialog open={showAdd} onOpenChange={setShowAdd}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader><DialogTitle>{t("addSubject")}</DialogTitle></DialogHeader>
-          <div className="py-2">
-            <label className="text-sm font-semibold text-slate-700 block mb-1.5">{t("name")} (e.g. Mathematics M2)</label>
-            <Input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Mathematics M2" onKeyDown={e => e.key === "Enter" && handleAdd()} autoFocus />
+          <div className="py-2 space-y-3">
+            <p className="text-xs text-slate-500">Select a subject from the global registry to link to this school year. Manage subjects and topics in <strong>Settings → Subjects</strong>.</p>
+            {availableSubjects.length === 0 ? (
+              <p className="text-sm text-slate-400 italic">All subjects are already linked, or no subjects exist. Go to Settings to add subjects.</p>
+            ) : (
+              <Select value={selectedSubjectId} onValueChange={setSelectedSubjectId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select subject…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableSubjects.map(s => (
+                    <SelectItem key={s.id} value={s.id}>
+                      {lang === "zh" ? s.nameCht : s.name} ({s.code} · {s.form})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowAdd(false)}>{t("cancel")}</Button>
-            <Button onClick={handleAdd} disabled={!newName.trim()}>{t("save")}</Button>
+            <Button onClick={handleAdd} disabled={!selectedSubjectId}>{t("save")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
+      {/* Delete confirm dialog */}
+      <Dialog open={!!deleteSubjectId} onOpenChange={() => setDeleteSubjectId(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader><DialogTitle>{t("delete")}</DialogTitle></DialogHeader>
           <p className="text-sm text-slate-600 py-2">{t("deleteConfirm")}</p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteId(null)}>{t("cancel")}</Button>
+            <Button variant="outline" onClick={() => setDeleteSubjectId(null)}>{t("cancel")}</Button>
             <Button variant="destructive" onClick={handleDelete}>{t("delete")}</Button>
           </DialogFooter>
         </DialogContent>

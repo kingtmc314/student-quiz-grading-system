@@ -1,10 +1,16 @@
+/*
+ * MarkSheet Editor
+ * Design: Institutional Clarity — clean table editor with topic tagging per question
+ * Supports: text parse, quick generate, manual edit, topic tag per row
+ */
 import { useState, useEffect } from "react";
 import { useParams, useLocation } from "wouter";
-import { Plus, Trash2, ArrowUp, ArrowDown, Wand2, FileText, Save, ChevronRight } from "lucide-react";
+import { Plus, Trash2, ArrowUp, ArrowDown, Wand2, FileText, Save, ChevronRight, Tag } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useData } from "@/contexts/DataContext";
 import { useI18n } from "@/contexts/I18nContext";
 import type { MarkItem } from "@/contexts/DataContext";
@@ -15,12 +21,13 @@ import { toast } from "sonner";
 
 export default function MarkSheet() {
   const { yearId, subjectId, classId, assessmentId } = useParams<{ yearId: string; subjectId: string; classId: string; assessmentId: string }>();
-  const { getSchoolYear, getSubject, getClass, getAssessment, updateMarkSheet } = useData();
-  const { t } = useI18n();
+  const { getSchoolYear, getSubject, getClass, getAssessment, updateMarkSheet, getGlobalSubject } = useData();
+  const { t, lang } = useI18n();
   const [, navigate] = useLocation();
 
   const year = getSchoolYear(yearId);
   const subject = getSubject(yearId, subjectId);
+  const globalSubject = getGlobalSubject(subjectId);
   const cls = getClass(yearId, subjectId, classId);
   const assessment = getAssessment(yearId, subjectId, classId, assessmentId);
 
@@ -33,6 +40,8 @@ export default function MarkSheet() {
   }, [assessment?.id]);
 
   if (!year || !subject || !cls || !assessment) return <div className="text-slate-400 text-sm">{t("noData")}</div>;
+
+  const topics = globalSubject?.topics ?? [];
 
   const handleSave = () => {
     const errors = validateMarkSheet(items);
@@ -51,7 +60,7 @@ export default function MarkSheet() {
   const handleQuickGenerate = () => {
     const n = parseInt(quickCount) || 10;
     const generated: MarkItem[] = Array.from({ length: n }, (_, i) => ({
-      id: nanoid(), label: String(i + 1), maxMark: 0,
+      id: nanoid(), label: String(i + 1), maxMark: 0, isSection: false,
     }));
     setItems(generated);
     toast.success(t("parseSuccess"));
@@ -72,31 +81,33 @@ export default function MarkSheet() {
     setItems(prev => { if (idx >= prev.length - 1) return prev; const a = [...prev]; [a[idx], a[idx + 1]] = [a[idx + 1], a[idx]]; return a; });
   };
 
-  const updateItem = (id: string, field: "label" | "maxMark", value: string | number) => {
+  const updateItem = (id: string, field: keyof MarkItem, value: string | number | boolean | undefined) => {
     setItems(prev => prev.map(i => i.id === id ? { ...i, [field]: value } : i));
   };
 
   const toggleSection = (id: string) => {
-    setItems(prev => prev.map(i => i.id === id ? { ...i, isSection: !i.isSection, maxMark: 0 } : i));
+    setItems(prev => prev.map(i => i.id === id ? { ...i, isSection: !i.isSection, maxMark: 0, topicId: undefined } : i));
   };
 
   const maxTotal = totalMaxMarks(items);
+  const assessTitle = lang === "zh" && assessment.titleCht ? assessment.titleCht : assessment.title;
+  const subjectName = lang === "zh" ? subject.nameCht : subject.name;
 
   return (
     <div className="space-y-4 animate-in fade-in duration-300">
       <HierarchyBreadcrumb items={[
         { label: t("schoolYears"), href: "/school-years" },
         { label: year.label, href: `/school-years/${yearId}/subjects` },
-        { label: subject.name, href: `/school-years/${yearId}/subjects/${subjectId}/classes` },
+        { label: subjectName, href: `/school-years/${yearId}/subjects/${subjectId}/classes` },
         { label: cls.name, href: `/school-years/${yearId}/subjects/${subjectId}/classes/${classId}/assessments` },
-        { label: assessment.title },
+        { label: assessTitle },
         { label: t("markSheet") },
       ]} />
 
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-xl font-bold text-slate-800">{t("editMarkSheet")}</h2>
-          <p className="text-sm text-slate-500 mt-0.5">{assessment.title} · {cls.name}</p>
+          <p className="text-sm text-slate-500 mt-0.5">{assessTitle} · {cls.name}</p>
         </div>
         <div className="flex gap-2">
           <Button onClick={handleSave} className="gap-1.5">
@@ -119,10 +130,11 @@ export default function MarkSheet() {
         <TabsContent value="editor">
           <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
             {/* Header */}
-            <div className="grid grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem] gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase tracking-wide text-slate-500">
-              <span></span>
+            <div className={`grid gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase tracking-wide text-slate-500 ${topics.length > 0 ? "grid-cols-[2rem_1fr_6rem_7rem_6rem_2rem_2rem]" : "grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"}`}>
+              <span>#</span>
               <span>{t("label")}</span>
               <span className="text-center">{t("maxMark")}</span>
+              {topics.length > 0 && <span className="flex items-center gap-1"><Tag className="w-3 h-3" />{t("topicTag")}</span>}
               <span className="text-center">Section?</span>
               <span></span>
               <span></span>
@@ -134,13 +146,13 @@ export default function MarkSheet() {
               items.map((item, idx) => (
                 <div
                   key={item.id}
-                  className={`grid grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem] gap-2 px-3 py-1.5 items-center border-b border-slate-100 last:border-0 ${item.isSection ? "bg-slate-100" : idx % 2 === 0 ? "bg-white" : "bg-slate-50/50"}`}
+                  className={`grid gap-2 px-3 py-1.5 items-center border-b border-slate-100 last:border-0 ${topics.length > 0 ? "grid-cols-[2rem_1fr_6rem_7rem_6rem_2rem_2rem]" : "grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"} ${item.isSection ? "bg-blue-50" : idx % 2 === 0 ? "bg-white" : "bg-slate-50/50"}`}
                 >
                   <span className="text-xs text-slate-400 font-mono text-center">{idx + 1}</span>
                   <Input
                     value={item.label}
                     onChange={e => updateItem(item.id, "label", e.target.value)}
-                    className={`h-7 text-sm font-mono ${item.isSection ? "font-bold bg-slate-100" : ""}`}
+                    className={`h-7 text-sm font-mono ${item.isSection ? "font-bold bg-blue-50 text-blue-700" : ""}`}
                     placeholder={item.isSection ? "Section A" : "2(a)"}
                   />
                   <Input
@@ -152,6 +164,25 @@ export default function MarkSheet() {
                     className="h-7 text-sm font-mono text-center"
                     placeholder="0"
                   />
+                  {topics.length > 0 && (
+                    <Select
+                      value={item.topicId ?? "none"}
+                      onValueChange={v => updateItem(item.id, "topicId", v === "none" ? undefined : v)}
+                      disabled={item.isSection}
+                    >
+                      <SelectTrigger className="h-7 text-xs">
+                        <SelectValue placeholder="—" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">—</SelectItem>
+                        {topics.map(tp => (
+                          <SelectItem key={tp.id} value={tp.id}>
+                            {tp.code ? `${tp.code} ` : ""}{lang === "zh" && tp.nameCht ? tp.nameCht : tp.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
                   <div className="flex justify-center">
                     <input
                       type="checkbox"
@@ -185,6 +216,13 @@ export default function MarkSheet() {
               </span>
             </div>
           </div>
+          {topics.length === 0 && (
+            <p className="text-xs text-slate-400 mt-2">
+              💡 {lang === "en"
+                ? "Add topics to the subject to enable per-question topic tagging."
+                : "為科目新增課題以啟用每題課題標籤功能。"}
+            </p>
+          )}
         </TabsContent>
 
         {/* ── Parse from text tab ── */}

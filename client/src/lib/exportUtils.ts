@@ -74,7 +74,7 @@ export function buildExportFilename(
     subjectName.replace(/\s+/g, "_"),
     className,
     assessment.term.replace(/\s+/g, ""),
-    assessment.nature,
+    assessment.natureId,
     assessment.title.replace(/\s+/g, "_"),
   ];
   return parts.join("_") + ".csv";
