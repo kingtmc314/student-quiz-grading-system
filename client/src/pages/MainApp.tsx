@@ -1645,17 +1645,25 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     return { id: a.id, title: lang === "zh" && a.titleCht ? a.titleCht : a.title, code: a.code, date: a.date, nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : "", isExam: nature?.isExam ?? false, total, max, pct, rank, classSize: classTotals.length };
   }) : [];
 
-  const topicAnalysis = student ? topics.map(topic => {
-    let earned = 0, max = 0;
-    assessments.forEach(a => {
-      const items = a.markSheet.filter(i => !i.isSection && i.topicId === topic.id);
-      if (items.length === 0) return;
-      const scoreMap = getScoreMap(a, student.id);
-      items.forEach(item => { earned += scoreMap[item.id] ?? 0; max += item.maxMark || 0; });
+  // Aggregate scores by Learning Unit (not individual objectives)
+  const topicAnalysis = student ? (() => {
+    const unitMap = new Map<string, { name: string; earned: number; max: number }>();
+    topics.forEach(topic => {
+      const unitKey = topic.learningUnit || (lang === "zh" ? "未分類單元" : "Unassigned Unit");
+      if (!unitMap.has(unitKey)) unitMap.set(unitKey, { name: unitKey, earned: 0, max: 0 });
+      const entry = unitMap.get(unitKey)!;
+      assessments.forEach(a => {
+        const items = a.markSheet.filter(i => !i.isSection && i.topicId === topic.id);
+        if (items.length === 0) return;
+        const scoreMap = getScoreMap(a, student.id);
+        items.forEach(item => { entry.earned += scoreMap[item.id] ?? 0; entry.max += item.maxMark || 0; });
+      });
     });
-    const pct = max > 0 ? Math.round((earned / max) * 100) : null;
-    return { id: topic.id, name: lang === "zh" && topic.nameCht ? topic.nameCht : topic.name, code: topic.code, pct, earned, max, status: pct === null ? "none" : pct >= 70 ? "strong" : pct >= 50 ? "average" : "weak" };
-  }) : [];
+    return Array.from(unitMap.entries()).map(([key, val]) => {
+      const pct = val.max > 0 ? Math.round((val.earned / val.max) * 100) : null;
+      return { id: key, name: val.name, code: "", pct, earned: val.earned, max: val.max, status: pct === null ? "none" : pct >= 70 ? "strong" : pct >= 50 ? "average" : "weak" as "none" | "strong" | "average" | "weak" };
+    });
+  })() : [];
 
   const gradedAssessments = assessmentHistory.filter(a => a.pct !== null);
   const caHistory = gradedAssessments.filter(a => !a.isExam);
@@ -1722,7 +1730,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
               <p className="text-3xl font-bold font-mono text-purple-600">{examHistory.length}</p>
             </div>
             <div className="bg-white rounded-xl border border-slate-200 p-4 text-center">
-              <p className="text-xs text-slate-500 mb-1">{t("strongTopics")}</p>
+              <p className="text-xs text-slate-500 mb-1">{lang === "zh" ? "強項學習單元" : "Strong Units"}</p>
               <p className="text-3xl font-bold font-mono text-green-600">{topicAnalysis.filter(tp => tp.status === "strong").length}</p>
             </div>
           </div>
@@ -1765,7 +1773,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
             {/* Topic analysis */}
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-              <div className="px-4 py-2 bg-slate-50 border-b border-slate-200"><p className="text-sm font-bold text-slate-700">{t("topicAnalysis")}</p></div>
+              <div className="px-4 py-2 bg-slate-50 border-b border-slate-200"><p className="text-sm font-bold text-slate-700">{lang === "zh" ? "學習單元分析" : "Learning Unit Analysis"}</p></div>
               {topics.length === 0 ? (
                 <div className="p-6 text-center text-slate-400 text-sm">{t("noTopicsYet")}</div>
               ) : (
@@ -1784,7 +1792,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                   )}
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
-                      <thead><tr className="border-b border-slate-100 bg-slate-50/50"><th className="text-left px-3 py-1.5 text-xs font-bold text-slate-500">{t("topic")}</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("score")}</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">%</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("status")}</th></tr></thead>
+                      <thead><tr className="border-b border-slate-100 bg-slate-50/50"><th className="text-left px-3 py-1.5 text-xs font-bold text-slate-500">{lang === "zh" ? "學習單元" : "Learning Unit"}</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("score")}</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">%</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("status")}</th></tr></thead>
                       <tbody>
                         {topicAnalysis.map(tp => (
                           <tr key={tp.id} className="border-b border-slate-100 last:border-0">
