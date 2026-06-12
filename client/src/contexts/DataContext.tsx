@@ -173,6 +173,7 @@ export interface Class {
   name: string;
   form: string;
   teacherId: string;
+  weightingSchemeId?: string;
   students: Student[];
   assessments: Assessment[];
 }
@@ -250,7 +251,7 @@ interface DataContextType {
   getGlobalSubject: (subjectId: string) => Subject | undefined;
   getTeacher: (teacherId: string) => Teacher | undefined;
   getNature: (natureId: string) => AssessmentNature | undefined;
-  getWeightingScheme: (form: string, subjectId: string) => WeightingScheme | undefined;
+  getWeightingScheme: (form: string, subjectId: string, weightingSchemeId?: string) => WeightingScheme | undefined;
 
   syllabusItems: SyllabusItem[];
   setSyllabusItems: (items: SyllabusItem[]) => void;
@@ -894,9 +895,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const getNature = useCallback((natureId: string) =>
     natures.find(n => n.id === natureId), [natures]);
 
-  const getWeightingScheme = useCallback((form: string, subjectId: string) =>
-    weightingSchemes.find(w => w.form === form && w.subjectId === subjectId),
-  [weightingSchemes]);
+  const getWeightingScheme = useCallback((form: string, subjectId: string, weightingSchemeId?: string) => {
+    if (weightingSchemeId) return weightingSchemes.find(w => w.id === weightingSchemeId);
+    return weightingSchemes.find(w => w.form === form && w.subjectId === subjectId);
+  }, [weightingSchemes]);
 
   // ── Backup / Restore ──────────────────────────────────────────────────────
 

@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.2.0";
+const APP_VERSION = "v1.2.1";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -173,10 +173,10 @@ function StudentMgmtTab({
   setClassId: (v: string) => void;
 }) {
   const {
-    schoolYears, subjects, teachers,
+    schoolYears, subjects, teachers, weightingSchemes,
     addSchoolYear, deleteSchoolYear,
     addSubjectToYear, removeSubjectFromYear, getGlobalSubject,
-    addClass, deleteClass,
+    addClass, updateClass, deleteClass,
     addStudent, updateStudent, deleteStudent, importStudents,
     getSchoolYear, getYearSubject, getClass,
     addSubject, updateSubject, deleteSubject,
@@ -372,11 +372,34 @@ function StudentMgmtTab({
       {/* ── Student roster ── */}
       {cls && (
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden flex-1">
-          <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-            <p className="text-sm font-bold text-slate-700">{cls.name} — {sortedStudents.length} {t("students")}</p>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={() => setShowImport(true)} className="gap-1 h-7 text-xs"><Upload className="w-3.5 h-3.5" />{t("import")}</Button>
-              <Button size="sm" onClick={() => setShowAddStudent(true)} className="gap-1 h-7 text-xs"><Plus className="w-3.5 h-3.5" />{t("addStudent")}</Button>
+          <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-bold text-slate-700">{cls.name} — {sortedStudents.length} {t("students")}</p>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => setShowImport(true)} className="gap-1 h-7 text-xs"><Upload className="w-3.5 h-3.5" />{t("import")}</Button>
+                <Button size="sm" onClick={() => setShowAddStudent(true)} className="gap-1 h-7 text-xs"><Plus className="w-3.5 h-3.5" />{t("addStudent")}</Button>
+              </div>
+            </div>
+            {/* Weighting scheme selector for this class */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500 shrink-0">{lang === "zh" ? "加權方案:" : "Weighting Scheme:"}</span>
+              <Select
+                value={cls.weightingSchemeId ?? "__auto__"}
+                onValueChange={v => updateClass(yearId, subjectId, cls.id, { weightingSchemeId: v === "__auto__" ? undefined : v })}
+              >
+                <SelectTrigger className="h-7 text-xs w-52">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__auto__">{lang === "zh" ? "自動配對（按年級/科目）" : "Auto-match (by form/subject)"}</SelectItem>
+                  {weightingSchemes
+                    .filter(ws => ws.form === cls.form)
+                    .map(ws => (
+                      <SelectItem key={ws.id} value={ws.id}>{ws.label}</SelectItem>
+                    ))
+                  }
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <div className="overflow-x-auto overflow-y-auto max-h-[60vh]">
@@ -1292,7 +1315,7 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
   const topics = globalSubject?.topics ?? [];
   const assessments = cls.assessments ?? [];
   const students = cls.students ?? [];
-  const scheme = getWeightingScheme(cls.form, subjectId);
+  const scheme = getWeightingScheme(cls.form, subjectId, cls.weightingSchemeId);
 
   const topicData = topics.map(topic => {
     let totalEarned = 0, totalMax = 0;
@@ -1483,6 +1506,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const cls = yearId && subjectId && classId ? getClass(yearId, subjectId, classId) : undefined;
 
   const [copied, setCopied] = useState(false);
+  const [summaryFilter, setSummaryFilter] = useState<"all" | "ca" | "exam">("all");
 
   if (!year || !subject || !cls) {
     return <div className="h-full flex items-center justify-center text-slate-400 text-sm">{lang === "zh" ? "請在側欄選擇學年、科目及班別" : "Select School Year, Subject and Class in the sidebar"}</div>;
@@ -1492,10 +1516,10 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const sortedStudents = [...cls.students].sort((a, b) => a.classNo.localeCompare(b.classNo, undefined, { numeric: true }));
 
   // Weighting scheme for this class's form + subject
-  const scheme = getWeightingScheme(cls.form, subjectId);
+  const scheme = getWeightingScheme(cls.form, subjectId, cls.weightingSchemeId);
 
-  // Per assessment, per student totals
-  const assessData = assessments.map(a => {
+  // Per assessment, per student totals (all assessments, for weighted total calculation)
+  const allAssessData = assessments.map(a => {
     const max = getAssessmentMax(a);
     const nature = getNature(a.natureId ?? "");
     const title = lang === "zh" && a.titleCht ? a.titleCht : a.title;
@@ -1507,6 +1531,13 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
       isExam: nature?.isExam ?? false,
       natureName: nature ? (lang === "zh" ? nature.nameCht : nature.name) : "",
     };
+  });
+
+  // Filtered assessData based on CA/Exam/All toggle
+  const assessData = allAssessData.filter(a => {
+    if (summaryFilter === "ca") return !a.isExam;
+    if (summaryFilter === "exam") return a.isExam;
+    return true;
   });
 
   const getStudentAssessmentTotal = (studentId: string, assessmentId: string) => {
@@ -1538,9 +1569,26 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
   return (
     <div className="h-full overflow-y-auto p-4 space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="text-xl font-bold text-slate-800">{lang === "zh" ? "統測/大考總表" : "Summary Table"} — {cls.name}</h2>
-        <Button size="sm" variant="outline" onClick={handleExportCSV} className="gap-1.5"><Download className="w-4 h-4" />{t("exportCSV")}</Button>
+        <div className="flex items-center gap-2">
+          {/* CA / Exam / All filter */}
+          <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
+            {(["all", "ca", "exam"] as const).map(f => (
+              <button
+                key={f}
+                onClick={() => setSummaryFilter(f)}
+                className={cn(
+                  "px-3 py-1.5 font-semibold transition-colors",
+                  summaryFilter === f ? "bg-blue-500 text-white" : "bg-white text-slate-600 hover:bg-slate-50"
+                )}
+              >
+                {f === "all" ? (lang === "zh" ? "全部" : "All") : f === "ca" ? (lang === "zh" ? "小測" : "CA") : (lang === "zh" ? "大考" : "Exam")}
+              </button>
+            ))}
+          </div>
+          <Button size="sm" variant="outline" onClick={handleExportCSV} className="gap-1.5"><Download className="w-4 h-4" />{t("exportCSV")}</Button>
+        </div>
       </div>
 
       {assessments.length === 0 ? (
@@ -1927,7 +1975,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const caHistory = gradedAssessments.filter(a => !a.isExam);
   const examHistory = gradedAssessments.filter(a => a.isExam);
   const avgPct = gradedAssessments.length > 0 ? Math.round(gradedAssessments.reduce((s, a) => s + (a.pct ?? 0), 0) / gradedAssessments.length) : null;
-  const scheme = cls ? getWeightingScheme(cls.form, subjectId) : undefined;
+  const scheme = cls ? getWeightingScheme(cls.form, subjectId, cls.weightingSchemeId) : undefined;
   const weightedTotal = student ? calcWeightedTotal(student.id, assessments, getNature, scheme) : null;
 
   const trendIcon = caHistory.length >= 2
