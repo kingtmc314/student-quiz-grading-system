@@ -1731,7 +1731,7 @@ function SettingsTab() {
   const { teachers, addTeacher, updateTeacher, deleteTeacher, natures, addNature, updateNature, deleteNature, weightingSchemes, addWeightingScheme, updateWeightingScheme, deleteWeightingScheme, subjects, addTopic, updateTopic, deleteTopic, replaceTopicsFromSyllabus, syllabusItems, setSyllabusItems } = useData();
   const { t, lang, setLang } = useI18n();
 
-  const [activeSection, setActiveSection] = useState<"teachers" | "natures" | "weighting" | "topics" | "syllabus">("teachers");
+  const [activeSection, setActiveSection] = useState<"teachers" | "natures" | "weighting" | "topics">("teachers");
 
   // Syllabus state
   const syllabusFileRef = useRef<HTMLInputElement>(null);
@@ -1878,8 +1878,12 @@ function SettingsTab() {
     { id: "natures" as const, label: lang === "zh" ? "評估性質" : "Assessment Natures" },
     { id: "weighting" as const, label: lang === "zh" ? "加權方案" : "Weighting Schemes" },
     { id: "topics" as const, label: lang === "zh" ? "課題管理" : "Topic Management" },
-    { id: "syllabus" as const, label: lang === "zh" ? "課程大綱" : "Syllabus" },
   ];
+
+  // Bulk-select state for topics
+  const [selectedTopicIds, setSelectedTopicIds] = useState<Set<string>>(new Set());
+  const [bulkSubjectId, setBulkSubjectId] = useState("");
+  const [topicsViewMode, setTopicsViewMode] = useState<"syllabus" | "manual">("syllabus");
 
   return (
     <div className="h-full flex flex-col md:flex-row overflow-hidden">
@@ -1990,7 +1994,7 @@ function SettingsTab() {
           </div>
         )}
 
-        {activeSection === "syllabus" && (
+        {false && (
           <div className="space-y-4">
             <div className="flex items-start justify-between flex-wrap gap-3">
               <div className="flex-1 min-w-0">
@@ -2105,35 +2109,190 @@ function SettingsTab() {
 
         {activeSection === "topics" && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <h3 className="text-lg font-bold text-slate-800">{lang === "zh" ? "課題管理" : "Topic Management"}</h3>
-              <div className="flex items-center gap-2">
-                <Select value={selectedSubjectForTopics} onValueChange={setSelectedSubjectForTopics}>
-                  <SelectTrigger className="h-8 text-sm w-48"><SelectValue placeholder={lang === "zh" ? "選擇科目…" : "Select subject…"} /></SelectTrigger>
-                  <SelectContent>{subjects.map(s => <SelectItem key={s.id} value={s.id}>{lang === "zh" ? s.nameCht : s.name} ({s.code})</SelectItem>)}</SelectContent>
-                </Select>
-                <Button size="sm" onClick={() => { setEditTopicId(null); setTopicForm({ name: "", nameCht: "", code: "" }); setShowAddTopic(true); }} disabled={!selectedSubjectForTopics} className="gap-1.5"><Plus className="w-4 h-4" />{t("addTopic")}</Button>
+            {/* Header */}
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">{lang === "zh" ? "課題管理" : "Topic Management"}</h3>
+                <p className="text-xs text-slate-500 mt-0.5">{lang === "zh" ? `已載入 ${syllabusItems.length} 個學習目標` : `${syllabusItems.length} learning objectives loaded`}</p>
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                <Button size="sm" variant="outline" onClick={() => syllabusFileRef.current?.click()} className="gap-1.5"><Upload className="w-4 h-4" />{lang === "zh" ? "上傳 Excel 課程大綱" : "Upload Syllabus Excel"}</Button>
+                <input ref={syllabusFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleSyllabusFile} />
+                {syllabusPreview.length > 0 && (
+                  <>
+                    <Select value={syllabusSubjectId} onValueChange={setSyllabusSubjectId}>
+                      <SelectTrigger className="h-8 text-xs w-44"><SelectValue placeholder={lang === "zh" ? "選擇科目…" : "Select subject…"} /></SelectTrigger>
+                      <SelectContent>{subjects.map(s => <SelectItem key={s.id} value={s.id}>{lang === "zh" ? s.nameCht || s.name : s.name} ({s.code})</SelectItem>)}</SelectContent>
+                    </Select>
+                    <Button size="sm" onClick={handleSaveSyllabus} className="gap-1.5"><Save className="w-4 h-4" />{lang === "zh" ? `確認儲存 (${syllabusPreview.length})` : `Confirm Save (${syllabusPreview.length})`}</Button>
+                  </>
+                )}
+                {syllabusItems.length > 0 && syllabusPreview.length === 0 && (
+                  <Button size="sm" variant="outline" onClick={handleClearSyllabus} className="gap-1.5 text-red-600 hover:bg-red-50"><Trash2 className="w-4 h-4" />{lang === "zh" ? "清除大綱" : "Clear Syllabus"}</Button>
+                )}
+                <Button size="sm" variant="outline" onClick={() => { setEditTopicId(null); setTopicForm({ name: "", nameCht: "", code: "" }); setSelectedSubjectForTopics(subjects[0]?.id ?? ""); setShowAddTopic(true); }} className="gap-1.5"><Plus className="w-4 h-4" />{lang === "zh" ? "手動新增" : "Add Manual"}</Button>
               </div>
             </div>
-            {selectedSubject && (
-              <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
-                {selectedSubject.topics.map(tp => (
-                  <div key={tp.id} className="flex items-center gap-3 px-4 py-3">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        {tp.code && <span className="text-xs font-mono text-slate-400">{tp.code}</span>}
-                        <p className="font-semibold text-slate-800 text-sm">{lang === "zh" && tp.nameCht ? tp.nameCht : tp.name}</p>
-                      </div>
-                    </div>
-                    <div className="flex gap-1">
-                      <button onClick={() => { setEditTopicId(tp.id); setTopicForm({ name: tp.name, nameCht: tp.nameCht, code: tp.code ?? "" }); setShowAddTopic(true); }} className="p-1.5 rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50"><Pencil className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => setDeleteTopicId(tp.id)} className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50"><Trash2 className="w-3.5 h-3.5" /></button>
-                    </div>
-                  </div>
-                ))}
-                {selectedSubject.topics.length === 0 && <p className="px-4 py-4 text-sm text-slate-400 italic">{t("noData")}</p>}
+
+            {/* Excel format hint */}
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-700">
+              <p className="font-semibold mb-1">{lang === "zh" ? "Excel 格式要求" : "Excel Format"}</p>
+              <p className="font-mono">Level | Strand | Learning Unit | Learning Objective | Category | Remarks</p>
+              <p className="mt-1 text-blue-600">{lang === "zh" ? 'Level 欄填寫 "Junior" 或 "Senior"' : 'Level column: "Junior" or "Senior"'}</p>
+            </div>
+
+            {/* Preview banner */}
+            {syllabusPreview.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-2 text-xs text-amber-700 font-medium">
+                ⚠ {lang === "zh" ? `預覽模式：${syllabusPreview.length} 個項目待確認儲存——請選擇科目後點「確認儲存」` : `Preview: ${syllabusPreview.length} items pending — select a subject then click Confirm Save`}
               </div>
             )}
+
+            {/* Bulk-assign bar (shown when items exist and none are in preview) */}
+            {syllabusItems.length > 0 && syllabusPreview.length === 0 && selectedTopicIds.size > 0 && (
+              <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                <span className="text-xs font-semibold text-blue-700">{selectedTopicIds.size} {lang === "zh" ? "項已選" : "selected"}</span>
+                <Select value={bulkSubjectId} onValueChange={setBulkSubjectId}>
+                  <SelectTrigger className="h-7 text-xs w-44"><SelectValue placeholder={lang === "zh" ? "指定科目…" : "Assign to subject…"} /></SelectTrigger>
+                  <SelectContent>{subjects.map(s => <SelectItem key={s.id} value={s.id}>{lang === "zh" ? s.nameCht || s.name : s.name} ({s.code})</SelectItem>)}</SelectContent>
+                </Select>
+                <Button size="sm" disabled={!bulkSubjectId} onClick={() => {
+                  if (!bulkSubjectId) return;
+                  const selected = syllabusItems.filter(si => selectedTopicIds.has(si.id));
+                  const topicsFromSelected = selected.map((s, i) => ({
+                    code: `SYL-${String(i + 1).padStart(3, "0")}`,
+                    name: s.learningObjective,
+                    nameCht: "",
+                    order: i + 1,
+                    level: s.level,
+                    learningUnit: s.learningUnit,
+                    learningObjective: s.learningObjective,
+                    strand: s.strand,
+                    category: s.category,
+                    remarks: s.remarks,
+                  }));
+                  replaceTopicsFromSyllabus(bulkSubjectId, topicsFromSelected);
+                  toast.success(lang === "zh" ? `已將 ${selected.length} 個目標指定至「${subjects.find(s => s.id === bulkSubjectId)?.name ?? ""}」` : `Assigned ${selected.length} objectives to "${subjects.find(s => s.id === bulkSubjectId)?.name ?? ""}"`); 
+                  setSelectedTopicIds(new Set());
+                  setBulkSubjectId("");
+                }} className="gap-1">{lang === "zh" ? "指定" : "Assign"}</Button>
+                <button onClick={() => setSelectedTopicIds(new Set())} className="text-xs text-blue-500 hover:underline ml-1">{lang === "zh" ? "取消選擇" : "Clear selection"}</button>
+              </div>
+            )}
+
+            {/* Filter + search */}
+            {(syllabusItems.length > 0 || syllabusPreview.length > 0) && (
+              <div className="flex flex-wrap gap-2 items-center">
+                <div className="flex gap-1">
+                  {(["all", "Junior", "Senior"] as const).map(f => (
+                    <button key={f} onClick={() => setSyllabusFilter(f)} className={cn("px-3 py-1 rounded-full text-xs font-semibold transition-colors", syllabusFilter === f ? "bg-blue-500 text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>
+                      {f === "all" ? (lang === "zh" ? "全部" : "All") : f}
+                    </button>
+                  ))}
+                </div>
+                <Input value={syllabusSearch} onChange={e => setSyllabusSearch(e.target.value)} placeholder={lang === "zh" ? "搜尋學習目標…" : "Search objectives…"} className="h-7 text-xs w-48 flex-1 max-w-xs" />
+                <span className="text-xs text-slate-400">{displayedSyllabus.length} {lang === "zh" ? "項" : "items"}</span>
+              </div>
+            )}
+
+            {/* Unified syllabus table with Subject column */}
+            {displayedSyllabus.length > 0 ? (
+              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                <div className="overflow-x-auto overflow-y-auto max-h-[55vh]">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-slate-50 z-10">
+                      <tr className="border-b border-slate-200">
+                        <th className="px-2 py-2 w-8">
+                          <input type="checkbox" className="w-3.5 h-3.5 rounded"
+                            checked={selectedTopicIds.size === displayedSyllabus.length && displayedSyllabus.length > 0}
+                            onChange={e => setSelectedTopicIds(e.target.checked ? new Set(displayedSyllabus.map(s => s.id)) : new Set())}
+                          />
+                        </th>
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500 whitespace-nowrap w-20">{lang === "zh" ? "程度" : "Level"}</th>
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500 whitespace-nowrap w-32">{lang === "zh" ? "範雇" : "Strand"}</th>
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500 whitespace-nowrap w-36">{lang === "zh" ? "學習單元" : "Learning Unit"}</th>
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500">{lang === "zh" ? "學習目標" : "Learning Objective"}</th>
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500 whitespace-nowrap w-28">{lang === "zh" ? "類別" : "Category"}</th>
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500 whitespace-nowrap w-28">{lang === "zh" ? "科目" : "Subject"}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {displayedSyllabus.map((item, i) => {
+                        // Find which subjects have this objective as a topic
+                        const linkedSubjects = subjects.filter(s => s.topics.some(tp => tp.learningObjective === item.learningObjective));
+                        const isSelected = selectedTopicIds.has(item.id);
+                        return (
+                          <tr key={item.id} className={cn("border-b border-slate-100 last:border-0 cursor-pointer", isSelected ? "bg-blue-50" : i % 2 === 0 ? "bg-white" : "bg-slate-50/50")} onClick={() => setSelectedTopicIds(prev => { const next = new Set(prev); isSelected ? next.delete(item.id) : next.add(item.id); return next; })}>
+                            <td className="px-2 py-2" onClick={e => e.stopPropagation()}>
+                              <input type="checkbox" className="w-3.5 h-3.5 rounded" checked={isSelected}
+                                onChange={e => setSelectedTopicIds(prev => { const next = new Set(prev); e.target.checked ? next.add(item.id) : next.delete(item.id); return next; })}
+                              />
+                            </td>
+                            <td className="px-3 py-2">
+                              <span className={cn("px-1.5 py-0.5 rounded text-xs font-semibold", item.level === "Junior" ? "bg-green-100 text-green-700" : item.level === "Senior" ? "bg-purple-100 text-purple-700" : "bg-slate-100 text-slate-600")}>{item.level || "—"}</span>
+                            </td>
+                            <td className="px-3 py-2 text-slate-600 font-medium">{item.strand}</td>
+                            <td className="px-3 py-2 text-slate-600">{item.learningUnit}</td>
+                            <td className="px-3 py-2 text-slate-800">{item.learningObjective}</td>
+                            <td className="px-3 py-2">
+                              <span className={cn("px-1.5 py-0.5 rounded text-xs", item.category === "Foundation" ? "bg-blue-100 text-blue-700" : item.category === "Non-Foundation" ? "bg-orange-100 text-orange-700" : "bg-slate-100 text-slate-600")}>{item.category || "—"}</span>
+                            </td>
+                            <td className="px-3 py-2">
+                              {linkedSubjects.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {linkedSubjects.map(s => (
+                                    <span key={s.id} className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 text-xs font-semibold">{s.code}</span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-slate-300 text-xs">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+                <BookOpen className="w-10 h-10 mx-auto mb-3 text-slate-300" />
+                <p className="text-slate-500 font-medium">{lang === "zh" ? "尚未載入課程大綱" : "No syllabus loaded yet"}</p>
+                <p className="text-xs text-slate-400 mt-1">{lang === "zh" ? '點擊「上傳 Excel 課程大綱」按鈕匯入課程大綱' : 'Click "Upload Syllabus Excel" to import your syllabus'}</p>
+              </div>
+            )}
+
+            {/* Manual topics section (per-subject flat list) */}
+            <div className="mt-2">
+              <div className="flex items-center gap-2 mb-2">
+                <h4 className="text-sm font-bold text-slate-700">{lang === "zh" ? "手動課題" : "Manual Topics"}</h4>
+                <Select value={selectedSubjectForTopics} onValueChange={setSelectedSubjectForTopics}>
+                  <SelectTrigger className="h-7 text-xs w-40"><SelectValue placeholder={lang === "zh" ? "選擇科目…" : "Select subject…"} /></SelectTrigger>
+                  <SelectContent>{subjects.map(s => <SelectItem key={s.id} value={s.id}>{lang === "zh" ? s.nameCht || s.name : s.name} ({s.code})</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              {selectedSubject && selectedSubject.topics.filter(tp => !tp.learningObjective).length > 0 ? (
+                <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
+                  {selectedSubject.topics.filter(tp => !tp.learningObjective).map(tp => (
+                    <div key={tp.id} className="flex items-center gap-3 px-4 py-2.5">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          {tp.code && <span className="text-xs font-mono text-slate-400">{tp.code}</span>}
+                          <p className="font-semibold text-slate-800 text-sm">{lang === "zh" && tp.nameCht ? tp.nameCht : tp.name}</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-1">
+                        <button onClick={() => { setEditTopicId(tp.id); setTopicForm({ name: tp.name, nameCht: tp.nameCht, code: tp.code ?? "" }); setShowAddTopic(true); }} className="p-1.5 rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50"><Pencil className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => setDeleteTopicId(tp.id)} className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400 italic px-1">{lang === "zh" ? "未有手動課題，點擊「手動新增」新增" : 'No manual topics. Click "Add Manual" to add one.'}</p>
+              )}
+            </div>
           </div>
         )}
       </div>
