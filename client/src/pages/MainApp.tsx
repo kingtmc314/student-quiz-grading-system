@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.3.3";
+const APP_VERSION = "v1.3.4";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -1747,13 +1747,14 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const handleExportCSV = () => {
     const flatAssess = termGroups.flatMap(g => [...g.caAssess, ...g.examAssess]);
     const rows: string[][] = [];
-    rows.push(["#", "Name", ...flatAssess.map(a => `${a.code || a.title} (/${a.max})`), "Weighted Total (%)"]);
+    rows.push(["#", lang === "zh" ? "姓名" : "Name", ...flatAssess.map(a => `${a.code || a.title} (/${a.max})`), lang === "zh" ? "CA總分" : "CA Total (%)", lang === "zh" ? "大考總分" : "Exam Total (%)"]);
     sortedStudents.forEach(s => {
-      const wt = calcWeightedTotal(s.id, assessments, getNature, scheme);
+      const caT = calcCATotal(s.id, assessments, getNature, scheme);
+      const examT = calcExamTotal(s.id, assessments, getNature, scheme);
       rows.push([s.classNo, lang === "zh" && s.nameCht ? s.nameCht : s.name, ...flatAssess.map(a => {
         const total = getStudentAssessmentTotal(s.id, a.id);
         return total !== null ? String(total) : "";
-      }), wt !== null ? `${wt}%` : ""]);
+      }), caT !== null ? `${caT}%` : "", examT !== null ? `${examT}%` : ""]);
     });
     const csv = rows.map(r => r.join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -1764,6 +1765,58 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     link.click();
     URL.revokeObjectURL(url);
     toast.success(t("exportCSV"));
+  };
+
+  const handleExportExcel = async () => {
+    const XLSX = await import("xlsx");
+    const flatAssess = termGroups.flatMap(g => [...g.caAssess, ...g.examAssess]);
+    // Build header rows matching the two-row table header
+    const headerRow1: (string | null)[] = ["#", lang === "zh" ? "姓名" : "Name"];
+    const headerRow2: (string | null)[] = ["", ""];
+    termGroups.forEach(g => {
+      const cols = g.caAssess.length + g.examAssess.length;
+      headerRow1.push(termLabel(g.term, lang));
+      for (let i = 1; i < cols; i++) headerRow1.push(null);
+      g.caAssess.forEach(() => headerRow2.push(lang === "zh" ? "小測" : "CA"));
+      g.examAssess.forEach(() => headerRow2.push(lang === "zh" ? "大考" : "Exam"));
+    });
+    headerRow1.push(lang === "zh" ? "CA總分" : "CA Total", lang === "zh" ? "大考總分" : "Exam Total");
+    headerRow2.push("%", "%");
+    // Assessment sub-header row
+    const assessRow: string[] = ["#", lang === "zh" ? "姓名" : "Name", ...flatAssess.map(a => a.code ? `${a.code} (/${a.max})` : `${a.title} (/${a.max})`), "", ""];
+    // Data rows
+    const dataRows = sortedStudents.map(s => {
+      const caT = calcCATotal(s.id, assessments, getNature, scheme);
+      const examT = calcExamTotal(s.id, assessments, getNature, scheme);
+      return [
+        s.classNo,
+        lang === "zh" && s.nameCht ? s.nameCht : s.name,
+        ...flatAssess.map(a => {
+          const total = getStudentAssessmentTotal(s.id, a.id);
+          return total !== null ? total : "";
+        }),
+        caT !== null ? caT : "",
+        examT !== null ? examT : "",
+      ];
+    });
+    const ws = XLSX.utils.aoa_to_sheet([headerRow1, headerRow2, assessRow, ...dataRows]);
+    // Style: merge term group header cells
+    const merges: { s: { r: number; c: number }; e: { r: number; c: number } }[] = [];
+    let col = 2;
+    termGroups.forEach(g => {
+      const span = g.caAssess.length + g.examAssess.length;
+      if (span > 1) {
+        merges.push({ s: { r: 0, c: col }, e: { r: 0, c: col + span - 1 } });
+      }
+      col += span;
+    });
+    ws["!merges"] = merges;
+    // Set column widths
+    ws["!cols"] = [{ wch: 5 }, { wch: 20 }, ...flatAssess.map(() => ({ wch: 12 })), { wch: 12 }, { wch: 12 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, cls.name.slice(0, 31));
+    XLSX.writeFile(wb, `${cls.name}_summary.xlsx`);
+    toast.success(lang === "zh" ? "已匯出 Excel" : "Excel exported");
   };
 
   const totalVisibleCols = termGroups.reduce((s, g) => s + g.caAssess.length + g.examAssess.length, 0);
@@ -1782,6 +1835,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
             ))}
           </div>
           <Button size="sm" variant="outline" onClick={handleExportCSV} className="gap-1.5"><Download className="w-4 h-4" />{t("exportCSV")}</Button>
+          <Button size="sm" variant="outline" onClick={handleExportExcel} className="gap-1.5 border-green-300 text-green-700 hover:bg-green-50"><Download className="w-4 h-4" />{lang === "zh" ? "匯出 Excel" : "Export Excel"}</Button>
         </div>
       </div>
 
@@ -2361,11 +2415,36 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                   if (termItems.length === 0) return null;
                   const caItems = termItems.filter(a => !a.isExam);
                   const examItems = termItems.filter(a => a.isExam);
+                  // Compute per-term CA% and Exam% totals
+                  const termCaEarned = caItems.reduce((s, a) => s + (a.total ?? 0), 0);
+                  const termCaMax = caItems.reduce((s, a) => s + a.max, 0);
+                  const termCaPct = termCaMax > 0 && caItems.some(a => a.total !== null) ? Math.round((termCaEarned / termCaMax) * 100) : null;
+                  const termExamEarned = examItems.reduce((s, a) => s + (a.total ?? 0), 0);
+                  const termExamMax = examItems.reduce((s, a) => s + a.max, 0);
+                  const termExamPct = termExamMax > 0 && examItems.some(a => a.total !== null) ? Math.round((termExamEarned / termExamMax) * 100) : null;
                   return (
                     <div key={term}>
-                      {/* Term header */}
-                      <div className="px-3 py-1 bg-slate-100 flex items-center gap-1.5">
-                        <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wide">{termLabel(term, lang)}</span>
+                      {/* Term header with CA/Exam badges */}
+                      <div className="px-3 py-1.5 bg-slate-100 flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wide flex-1">{termLabel(term, lang)}</span>
+                        {termCaPct !== null && (
+                          <span className={cn(
+                            "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold",
+                            termCaPct >= 70 ? "bg-green-100 text-green-700" : termCaPct >= 50 ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
+                          )}>
+                            <span className="text-blue-500">{lang === "zh" ? "小測" : "CA"}</span>
+                            <span>{termCaPct}%</span>
+                          </span>
+                        )}
+                        {termExamPct !== null && (
+                          <span className={cn(
+                            "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold",
+                            termExamPct >= 70 ? "bg-green-100 text-green-700" : termExamPct >= 50 ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
+                          )}>
+                            <span className="text-red-500">{lang === "zh" ? "大考" : "Exam"}</span>
+                            <span>{termExamPct}%</span>
+                          </span>
+                        )}
                       </div>
                       {/* CA section */}
                       {caItems.length > 0 && (
