@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.3.1";
+const APP_VERSION = "v1.3.2";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -79,7 +79,14 @@ function calcWeightedTotal(
   let weightedSum = 0;
   let totalWeight = 0;
 
-  // Apply CA entries
+  // Check if any exam nature has an explicit entry in caEntries (per-nature exam weights)
+  const entryNatureIds = new Set(scheme.caEntries.map(e => e.natureId));
+  const hasPerNatureExamWeights = Array.from(byNature.keys()).some(nid => {
+    const nature = getNature(nid);
+    return nature?.isExam && entryNatureIds.has(nid);
+  });
+
+  // Apply all caEntries (covers both CA natures and exam natures if per-nature weights are set)
   scheme.caEntries.forEach(entry => {
     const group = byNature.get(entry.natureId);
     if (!group || group.max === 0) return;
@@ -88,8 +95,8 @@ function calcWeightedTotal(
     totalWeight += entry.percentage;
   });
 
-  // Apply exam percentage: sum all exam natures
-  if (scheme.examPercentage > 0) {
+  // Apply combined examPercentage only if no per-nature exam weights exist in caEntries
+  if (!hasPerNatureExamWeights && scheme.examPercentage > 0) {
     let examEarned = 0, examMax = 0;
     byNature.forEach((group, nid) => {
       const nature = getNature(nid);
@@ -2451,6 +2458,7 @@ function SettingsTab() {
   const [showAddWeighting, setShowAddWeighting] = useState(false);
   const [editWeightingId, setEditWeightingId] = useState<string | null>(null);
   const [weightingForm, setWeightingForm] = useState({ label: "", form: "S6", subjectId: subjects[0]?.id ?? "", examPercentage: 60 });
+  const [weightingEntries, setWeightingEntries] = useState<Array<{ natureId: string; percentage: number }>>([]);
   const [deleteWeightingId, setDeleteWeightingId] = useState<string | null>(null);
 
   // Topic state
@@ -2484,10 +2492,20 @@ function SettingsTab() {
 
   const handleSaveWeighting = () => {
     if (!weightingForm.label.trim()) { toast.error(t("validationError")); return; }
+    // Separate CA entries from exam entries
+    const caEntries = weightingEntries.filter(e => {
+      const nat = natures.find(n => n.id === e.natureId);
+      return nat && !nat.isExam;
+    });
+    const examEntries = weightingEntries.filter(e => {
+      const nat = natures.find(n => n.id === e.natureId);
+      return nat && nat.isExam;
+    });
+    const examPercentage = examEntries.reduce((s, e) => s + e.percentage, 0);
     if (editWeightingId) {
-      updateWeightingScheme(editWeightingId, { label: weightingForm.label.trim(), examPercentage: weightingForm.examPercentage });
+      updateWeightingScheme(editWeightingId, { label: weightingForm.label.trim(), caEntries, examPercentage });
     } else {
-      addWeightingScheme({ label: weightingForm.label.trim(), form: weightingForm.form, subjectId: weightingForm.subjectId, caEntries: [], examPercentage: weightingForm.examPercentage });
+      addWeightingScheme({ label: weightingForm.label.trim(), form: weightingForm.form, subjectId: weightingForm.subjectId, caEntries, examPercentage });
     }
     toast.success(t("saved")); setShowAddWeighting(false); setEditWeightingId(null);
   };
@@ -2603,17 +2621,48 @@ function SettingsTab() {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-bold text-slate-800">{lang === "zh" ? "加權方案" : "Weighting Schemes"}</h3>
-              <Button size="sm" onClick={() => { setEditWeightingId(null); setWeightingForm({ label: "", form: "S6", subjectId: subjects[0]?.id ?? "", examPercentage: 60 }); setShowAddWeighting(true); }} className="gap-1.5"><Plus className="w-4 h-4" />{t("addWeightingScheme")}</Button>
+              <Button size="sm" onClick={() => {
+                setEditWeightingId(null);
+                setWeightingForm({ label: "", form: "S6", subjectId: subjects[0]?.id ?? "", examPercentage: 60 });
+                // Pre-populate with one row per nature
+                setWeightingEntries(natures.map(n => ({ natureId: n.id, percentage: 0 })));
+                setShowAddWeighting(true);
+              }} className="gap-1.5"><Plus className="w-4 h-4" />{t("addWeightingScheme")}</Button>
             </div>
             <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
               {weightingSchemes.map(ws => (
                 <div key={ws.id} className="flex items-center gap-3 px-4 py-3">
                   <div className="flex-1">
                     <p className="font-semibold text-slate-800 text-sm">{ws.label}</p>
-                    <p className="text-xs text-slate-400">{ws.form} · {t("examPercentage")}: {ws.examPercentage}%</p>
+                    <p className="text-xs text-slate-400">
+                      {ws.form} ·{" "}
+                      {[...ws.caEntries.map(e => {
+                        const nat = natures.find(n => n.id === e.natureId);
+                        return nat ? `${lang === "zh" ? nat.nameCht : nat.name}: ${e.percentage}%` : null;
+                      }).filter(Boolean),
+                      ws.examPercentage > 0 ? `${lang === "zh" ? "大考" : "Exam"}: ${ws.examPercentage}%` : null
+                      ].filter(Boolean).join(" · ") || `${t("examPercentage")}: ${ws.examPercentage}%`}
+                    </p>
                   </div>
                   <div className="flex gap-1">
-                    <button onClick={() => { setEditWeightingId(ws.id); setWeightingForm({ label: ws.label, form: ws.form, subjectId: ws.subjectId, examPercentage: ws.examPercentage }); setShowAddWeighting(true); }} className="p-1.5 rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => {
+                      setEditWeightingId(ws.id);
+                      setWeightingForm({ label: ws.label, form: ws.form, subjectId: ws.subjectId, examPercentage: ws.examPercentage });
+                      // Build entries: CA entries from scheme + exam entries from natures
+                      const allEntries = natures.map(n => {
+                        if (n.isExam) {
+                          // Find if this exam nature has its own entry or use combined examPercentage
+                          const examNatures = natures.filter(x => x.isExam);
+                          const pct = examNatures.length === 1 ? ws.examPercentage : 0;
+                          return { natureId: n.id, percentage: pct };
+                        } else {
+                          const existing = ws.caEntries.find(e => e.natureId === n.id);
+                          return { natureId: n.id, percentage: existing?.percentage ?? 0 };
+                        }
+                      });
+                      setWeightingEntries(allEntries);
+                      setShowAddWeighting(true);
+                    }} className="p-1.5 rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50"><Pencil className="w-3.5 h-3.5" /></button>
                     <button onClick={() => setDeleteWeightingId(ws.id)} className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50"><Trash2 className="w-3.5 h-3.5" /></button>
                   </div>
                 </div>
@@ -2973,13 +3022,81 @@ function SettingsTab() {
       </AlertDialog>
 
       <Dialog open={showAddWeighting} onOpenChange={setShowAddWeighting}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent className="sm:max-w-md">
           <DialogHeader><DialogTitle>{editWeightingId ? t("edit") : t("addWeightingScheme")}</DialogTitle></DialogHeader>
-          <div className="space-y-3 py-2">
+          <div className="space-y-4 py-2">
             <div><Label>{t("schemeLabel")}</Label><Input value={weightingForm.label} onChange={e => setWeightingForm(f => ({ ...f, label: e.target.value }))} autoFocus /></div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div><Label>{t("form")}</Label><Select value={weightingForm.form} onValueChange={v => setWeightingForm(f => ({ ...f, form: v }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["S1","S2","S3","S4","S5","S6"].map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}</SelectContent></Select></div>
-              <div><Label>{t("examPercentage")} (%)</Label><Input type="number" min={0} max={100} value={weightingForm.examPercentage} onChange={e => setWeightingForm(f => ({ ...f, examPercentage: parseInt(e.target.value) || 0 }))} /></div>
+            {!editWeightingId && (
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>{t("form")}</Label><Select value={weightingForm.form} onValueChange={v => setWeightingForm(f => ({ ...f, form: v }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["S1","S2","S3","S4","S5","S6"].map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}</SelectContent></Select></div>
+              </div>
+            )}
+            {/* Per-nature percentage breakdown */}
+            <div>
+              <Label className="mb-2 block">{lang === "zh" ? "各評估性質佔分比例" : "Per-Nature Percentage Breakdown"}</Label>
+              <div className="rounded-lg border border-slate-200 overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-medium text-slate-600">{lang === "zh" ? "性質" : "Nature"}</th>
+                      <th className="text-center px-3 py-2 font-medium text-slate-600">{lang === "zh" ? "類型" : "Type"}</th>
+                      <th className="text-right px-3 py-2 font-medium text-slate-600">{lang === "zh" ? "佔分 (%)" : "Weight (%)"}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {natures.map(nat => {
+                      const entry = weightingEntries.find(e => e.natureId === nat.id);
+                      const pct = entry?.percentage ?? 0;
+                      return (
+                        <tr key={nat.id} className="hover:bg-slate-50/50">
+                          <td className="px-3 py-2 font-medium text-slate-800">
+                            {lang === "zh" && nat.nameCht ? nat.nameCht : nat.name}
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${
+                              nat.isExam ? "bg-red-100 text-red-600" : "bg-blue-100 text-blue-600"
+                            }`}>
+                              {nat.isExam ? (lang === "zh" ? "大考" : "EXAM") : (lang === "zh" ? "平時分" : "CA")}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            <Input
+                              type="number"
+                              min={0}
+                              max={100}
+                              value={pct}
+                              onChange={e => {
+                                const val = parseInt(e.target.value) || 0;
+                                setWeightingEntries(prev =>
+                                  prev.map(x => x.natureId === nat.id ? { ...x, percentage: val } : x)
+                                );
+                              }}
+                              className="w-20 text-right h-7 text-sm ml-auto"
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot className="bg-slate-50 border-t border-slate-200">
+                    <tr>
+                      <td colSpan={2} className="px-3 py-2 font-semibold text-slate-700">{lang === "zh" ? "合計" : "Total"}</td>
+                      <td className="px-3 py-2 text-right">
+                        {(() => {
+                          const total = weightingEntries.reduce((s, e) => s + e.percentage, 0);
+                          return (
+                            <span className={`font-bold text-sm ${
+                              total === 100 ? "text-green-600" : total > 100 ? "text-red-600" : "text-amber-600"
+                            }`}>
+                              {total}%{total !== 100 && ` (${lang === "zh" ? "應為100%" : "should be 100%"})`}
+                            </span>
+                          );
+                        })()}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
             </div>
           </div>
           <DialogFooter><Button variant="outline" onClick={() => setShowAddWeighting(false)}>{t("cancel")}</Button><Button onClick={handleSaveWeighting}>{t("save")}</Button></DialogFooter>
