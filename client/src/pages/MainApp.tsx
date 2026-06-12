@@ -1615,6 +1615,106 @@ function ChartTab({ yearId, subjectId, classId }: { yearId: string; subjectId: s
   );
 }
 
+// ─── Hierarchy Analysis Table Component ─────────────────────────────────────
+type HierObjEntry = { topicId: string; name: string; earned: number; max: number };
+type HierUnitEntry = { name: string; earned: number; max: number; objectives: HierObjEntry[] };
+type HierLevelEntry = { name: string; earned: number; max: number; units: Map<string, HierUnitEntry> };
+
+function HierarchyAnalysisTable({ hierarchyData, lang, t }: {
+  hierarchyData: Map<string, HierLevelEntry>;
+  lang: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  t: (k: any) => string;
+}) {
+  const [expandedLevels, setExpandedLevels] = useState<Set<string>>(new Set(Array.from(hierarchyData.keys())));
+  const [expandedUnits, setExpandedUnits] = useState<Set<string>>(new Set());
+
+  const toggleLevel = (key: string) => setExpandedLevels(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  const toggleUnit = (key: string) => setExpandedUnits(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+
+  const statusColor = (pct: number | null) => pct === null ? "text-slate-300" : pct >= 70 ? "text-green-600" : pct >= 50 ? "text-amber-600" : "text-red-600";
+  const statusBadge = (pct: number | null) => {
+    if (pct === null) return null;
+    const s = pct >= 70 ? "strong" : pct >= 50 ? "average" : "weak";
+    const cls = s === "strong" ? "bg-green-100 text-green-700" : s === "average" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700";
+    return <span className={cn("text-xs font-semibold px-1.5 py-0.5 rounded-full", cls)}>{t(s)}</span>;
+  };
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-slate-100 bg-slate-50/50">
+            <th className="text-left px-3 py-1.5 text-xs font-bold text-slate-500">{lang === "zh" ? "層次" : "Level / Unit / Objective"}</th>
+            <th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("score")}</th>
+            <th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">%</th>
+            <th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("status")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from(hierarchyData.entries()).map(([levelKey, levelEntry]) => {
+            const levelPct = levelEntry.max > 0 ? Math.round((levelEntry.earned / levelEntry.max) * 100) : null;
+            const isLevelOpen = expandedLevels.has(levelKey);
+            return (
+              <React.Fragment key={levelKey}>
+                {/* Level row */}
+                <tr className="border-b border-slate-200 bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => toggleLevel(levelKey)}>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <ChevronRight className={cn("w-3.5 h-3.5 text-slate-400 transition-transform", isLevelOpen && "rotate-90")} />
+                      <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">{levelEntry.name}</span>
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 text-center font-mono text-slate-700 text-xs font-bold">{levelEntry.max > 0 ? `${levelEntry.earned}/${levelEntry.max}` : "—"}</td>
+                  <td className="px-2 py-2 text-center"><span className={cn("font-mono font-bold text-xs", statusColor(levelPct))}>{levelPct !== null ? `${levelPct}%` : "—"}</span></td>
+                  <td className="px-2 py-2 text-center">{statusBadge(levelPct)}</td>
+                </tr>
+                {isLevelOpen && Array.from(levelEntry.units.entries()).map(([unitKey, unitEntry]) => {
+                  const unitPct = unitEntry.max > 0 ? Math.round((unitEntry.earned / unitEntry.max) * 100) : null;
+                  const unitRowKey = `${levelKey}::${unitKey}`;
+                  const isUnitOpen = expandedUnits.has(unitRowKey);
+                  return (
+                    <React.Fragment key={unitRowKey}>
+                      {/* Unit row */}
+                      <tr className="border-b border-slate-100 bg-white cursor-pointer hover:bg-blue-50/40 transition-colors" onClick={() => toggleUnit(unitRowKey)}>
+                        <td className="px-3 py-1.5">
+                          <div className="flex items-center gap-1.5 pl-4">
+                            <ChevronRight className={cn("w-3 h-3 text-slate-300 transition-transform", isUnitOpen && "rotate-90")} />
+                            <span className="text-xs font-semibold text-slate-700">{unitEntry.name}</span>
+                          </div>
+                        </td>
+                        <td className="px-2 py-1.5 text-center font-mono text-slate-600 text-xs">{unitEntry.max > 0 ? `${unitEntry.earned}/${unitEntry.max}` : "—"}</td>
+                        <td className="px-2 py-1.5 text-center"><span className={cn("font-mono font-bold text-xs", statusColor(unitPct))}>{unitPct !== null ? `${unitPct}%` : "—"}</span></td>
+                        <td className="px-2 py-1.5 text-center">{statusBadge(unitPct)}</td>
+                      </tr>
+                      {isUnitOpen && unitEntry.objectives.map(obj => {
+                        const objPct = obj.max > 0 ? Math.round((obj.earned / obj.max) * 100) : null;
+                        return (
+                          <tr key={obj.topicId} className="border-b border-slate-50 bg-slate-50/30">
+                            <td className="px-3 py-1">
+                              <div className="flex items-center gap-1.5 pl-10">
+                                <span className="w-1.5 h-1.5 rounded-full bg-slate-300 shrink-0" />
+                                <span className="text-xs text-slate-500">{obj.name}</span>
+                              </div>
+                            </td>
+                            <td className="px-2 py-1 text-center font-mono text-slate-500 text-xs">{obj.max > 0 ? `${obj.earned}/${obj.max}` : "—"}</td>
+                            <td className="px-2 py-1 text-center"><span className={cn("font-mono text-xs", statusColor(objPct))}>{objPct !== null ? `${objPct}%` : "—"}</span></td>
+                            <td className="px-2 py-1 text-center">{statusBadge(objPct)}</td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                })}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ─── Tab: Student Profile ─────────────────────────────────────────────────────
 function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId: string; classId: string }) {
   const { getSchoolYear, getSubject, getClass, getGlobalSubject, getNature } = useData();
@@ -1646,25 +1746,47 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     return { id: a.id, title: lang === "zh" && a.titleCht ? a.titleCht : a.title, code: a.code, date: a.date, nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : "", isExam: nature?.isExam ?? false, total, max, pct, rank, classSize: classTotals.length };
   }) : [];
 
-  // Aggregate scores by Learning Unit (not individual objectives)
-  const topicAnalysis = student ? (() => {
-    const unitMap = new Map<string, { name: string; earned: number; max: number }>();
+  // Build 3-level hierarchy: Level > Learning Unit > Objective (only with score data)
+  type ObjEntry = { topicId: string; name: string; earned: number; max: number };
+  type UnitEntry = { name: string; earned: number; max: number; objectives: ObjEntry[] };
+  type LevelEntry = { name: string; earned: number; max: number; units: Map<string, UnitEntry> };
+
+  const hierarchyData = student ? (() => {
+    const levelMap = new Map<string, LevelEntry>();
     topics.forEach(topic => {
+      const levelKey = topic.level || (lang === "zh" ? "其他" : "Other");
       const unitKey = topic.learningUnit || (lang === "zh" ? "未分類單元" : "Unassigned Unit");
-      if (!unitMap.has(unitKey)) unitMap.set(unitKey, { name: unitKey, earned: 0, max: 0 });
-      const entry = unitMap.get(unitKey)!;
+      const objName = topic.learningObjective || topic.name;
+
+      // Compute score for this topic across all assessments
+      let earned = 0, max = 0;
       assessments.forEach(a => {
         const items = a.markSheet.filter(i => !i.isSection && i.topicId === topic.id);
         if (items.length === 0) return;
         const scoreMap = getScoreMap(a, student.id);
-        items.forEach(item => { entry.earned += scoreMap[item.id] ?? 0; entry.max += item.maxMark || 0; });
+        items.forEach(item => { earned += scoreMap[item.id] ?? 0; max += item.maxMark || 0; });
       });
+      if (max === 0) return; // skip topics with no mark sheet items
+
+      if (!levelMap.has(levelKey)) levelMap.set(levelKey, { name: levelKey, earned: 0, max: 0, units: new Map() });
+      const levelEntry = levelMap.get(levelKey)!;
+      if (!levelEntry.units.has(unitKey)) levelEntry.units.set(unitKey, { name: unitKey, earned: 0, max: 0, objectives: [] });
+      const unitEntry = levelEntry.units.get(unitKey)!;
+
+      unitEntry.objectives.push({ topicId: topic.id, name: objName, earned, max });
+      unitEntry.earned += earned; unitEntry.max += max;
+      levelEntry.earned += earned; levelEntry.max += max;
     });
-    return Array.from(unitMap.entries()).map(([key, val]) => {
-      const pct = val.max > 0 ? Math.round((val.earned / val.max) * 100) : null;
-      return { id: key, name: val.name, code: "", pct, earned: val.earned, max: val.max, status: pct === null ? "none" : pct >= 70 ? "strong" : pct >= 50 ? "average" : "weak" as "none" | "strong" | "average" | "weak" };
-    });
-  })() : [];
+    return levelMap;
+  })() : new Map<string, LevelEntry>();
+
+  // Flat topicAnalysis for radar chart (per unit, with scores only)
+  const topicAnalysis = student ? Array.from(hierarchyData.values()).flatMap(lv =>
+    Array.from(lv.units.values()).map(u => {
+      const pct = u.max > 0 ? Math.round((u.earned / u.max) * 100) : null;
+      return { id: u.name, name: u.name, pct, earned: u.earned, max: u.max, status: pct === null ? "none" : pct >= 70 ? "strong" : pct >= 50 ? "average" : "weak" as "none" | "strong" | "average" | "weak" };
+    })
+  ) : [];
 
   const gradedAssessments = assessmentHistory.filter(a => a.pct !== null);
   const caHistory = gradedAssessments.filter(a => !a.isExam);
@@ -1772,17 +1894,17 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
               </div>
             </div>
 
-            {/* Topic analysis */}
+            {/* Topic analysis — 3-level hierarchy: Level > Unit > Objective */}
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
               <div className="px-4 py-2 bg-slate-50 border-b border-slate-200"><p className="text-sm font-bold text-slate-700">{lang === "zh" ? "學習單元分析" : "Learning Unit Analysis"}</p></div>
-              {topics.length === 0 ? (
-                <div className="p-6 text-center text-slate-400 text-sm">{t("noTopicsYet")}</div>
+              {hierarchyData.size === 0 ? (
+                <div className="p-6 text-center text-slate-400 text-sm">{lang === "zh" ? "暫無評分數據" : "No scored data yet"}</div>
               ) : (
                 <>
-                  {topicAnalysis.filter(tp => tp.pct !== null).length >= 3 && (
+                  {topicAnalysis.length >= 3 && (
                     <div className="p-3">
                       <ResponsiveContainer width="100%" height={180}>
-                        <RadarChart data={topicAnalysis.filter(tp => tp.pct !== null)}>
+                        <RadarChart data={topicAnalysis}>
                           <PolarGrid stroke="#e2e8f0" />
                           <PolarAngleAxis dataKey="name" tick={{ fontSize: 9 }} />
                           <PolarRadiusAxis domain={[0, 100]} tick={{ fontSize: 8 }} />
@@ -1791,21 +1913,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                       </ResponsiveContainer>
                     </div>
                   )}
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead><tr className="border-b border-slate-100 bg-slate-50/50"><th className="text-left px-3 py-1.5 text-xs font-bold text-slate-500">{lang === "zh" ? "學習單元" : "Learning Unit"}</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("score")}</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">%</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("status")}</th></tr></thead>
-                      <tbody>
-                        {topicAnalysis.filter(tp => tp.pct !== null).map(tp => (
-                          <tr key={tp.id} className="border-b border-slate-100 last:border-0">
-                            <td className="px-3 py-1.5"><div><span className="text-xs font-semibold text-slate-800">{tp.name}</span></div></td>
-                            <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{tp.max > 0 ? `${tp.earned}/${tp.max}` : "—"}</td>
-                            <td className="px-2 py-1.5 text-center">{tp.pct !== null ? <span className={cn("font-mono font-bold text-xs", tp.status === "strong" ? "text-green-600" : tp.status === "average" ? "text-amber-600" : "text-red-600")}>{tp.pct}%</span> : <span className="text-slate-300 text-xs">—</span>}</td>
-                            <td className="px-2 py-1.5 text-center">{tp.pct !== null ? <span className={cn("text-xs font-semibold px-1.5 py-0.5 rounded-full", tp.status === "strong" ? "bg-green-100 text-green-700" : tp.status === "average" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700")}>{tp.status === "strong" ? t("strong") : tp.status === "average" ? t("average") : t("weak")}</span> : <span className="text-slate-300 text-xs">—</span>}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <HierarchyAnalysisTable hierarchyData={hierarchyData} lang={lang} t={t} />
                 </>
               )}
             </div>
