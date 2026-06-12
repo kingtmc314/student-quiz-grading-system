@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.2.1";
+const APP_VERSION = "v1.3.0";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -160,6 +160,15 @@ function getScoreMap(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }
 
 function getAssessmentMax(assessment: { markSheet: MarkItem[] }): number {
   return assessment.markSheet.filter(i => !i.isSection).reduce((s, i) => s + (i.maxMark || 0), 0);
+}
+
+// Ordered list of terms for consistent display
+const ORDERED_TERMS: Term[] = ["Term 1", "Term 2", "Full Year"];
+
+function termLabel(term: Term, lang: string): string {
+  if (term === "Term 1") return lang === "zh" ? "第一學期" : "Term 1";
+  if (term === "Term 2") return lang === "zh" ? "第二學期" : "Term 2";
+  return lang === "zh" ? "全年" : "Full Year";
 }
 
 // ─── Tab: Student Management ──────────────────────────────────────────────────
@@ -1340,23 +1349,31 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
     };
   });
 
-  const caAssessments = assessments.filter(a => { const n = getNature(a.natureId ?? ""); return n && !n.isExam; });
-  const examAssessments = assessments.filter(a => { const n = getNature(a.natureId ?? ""); return n && n.isExam; });
+  // Build per-term CA/Exam groups for summary
+  const termAssessGroups = ORDERED_TERMS.map(term => {
+    const termAssess = assessments.filter(a => a.term === term);
+    const caAssess = termAssess.filter(a => { const n = getNature(a.natureId ?? ""); return n && !n.isExam; });
+    const examAssess = termAssess.filter(a => { const n = getNature(a.natureId ?? ""); return n && n.isExam; });
+    return { term, caAssess, examAssess, hasData: caAssess.length > 0 || examAssess.length > 0 };
+  }).filter(g => g.hasData);
 
   const studentSummary = students.map(student => {
-    let caTotalEarned = 0, caTotalMax = 0;
-    caAssessments.forEach(a => { const t = getScoreTotal(a, student.id); if (t !== null) { caTotalEarned += t; caTotalMax += getAssessmentMax(a); } });
-    let examTotalEarned = 0, examTotalMax = 0;
-    examAssessments.forEach(a => { const t = getScoreTotal(a, student.id); if (t !== null) { examTotalEarned += t; examTotalMax += getAssessmentMax(a); } });
+    const termRows = termAssessGroups.map(g => {
+      let caTotalEarned = 0, caTotalMax = 0;
+      g.caAssess.forEach(a => { const sc = getScoreTotal(a, student.id); if (sc !== null) { caTotalEarned += sc; caTotalMax += getAssessmentMax(a); } });
+      let examTotalEarned = 0, examTotalMax = 0;
+      g.examAssess.forEach(a => { const sc = getScoreTotal(a, student.id); if (sc !== null) { examTotalEarned += sc; examTotalMax += getAssessmentMax(a); } });
+      return {
+        term: g.term,
+        caPct: caTotalMax > 0 ? Math.round((caTotalEarned / caTotalMax) * 100) : null,
+        examPct: examTotalMax > 0 ? Math.round((examTotalEarned / examTotalMax) * 100) : null,
+        caTotalEarned, caTotalMax, examTotalEarned, examTotalMax,
+        hasCA: g.caAssess.length > 0, hasExam: g.examAssess.length > 0,
+      };
+    });
     const weightedTotal = calcWeightedTotal(student.id, assessments, getNature, scheme);
-    return {
-      student,
-      caPct: caTotalMax > 0 ? Math.round((caTotalEarned / caTotalMax) * 100) : null,
-      examPct: examTotalMax > 0 ? Math.round((examTotalEarned / examTotalMax) * 100) : null,
-      caTotalEarned, caTotalMax, examTotalEarned, examTotalMax,
-      weightedTotal,
-    };
-  }).sort((a, b) => ((b.weightedTotal ?? b.caPct ?? 0) + 0) - ((a.weightedTotal ?? a.caPct ?? 0) + 0));
+    return { student, termRows, weightedTotal };
+  }).sort((a, b) => ((b.weightedTotal ?? 0) - (a.weightedTotal ?? 0)));
 
   const colorForStatus = (status: string) => status === "strong" ? "#22c55e" : status === "average" ? "#f59e0b" : status === "weak" ? "#ef4444" : "#94a3b8";
 
@@ -1413,79 +1430,130 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
         </TabsContent>
 
         <TabsContent value="summary">
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200">
-                    <th className="text-left px-3 py-2 text-xs font-bold text-slate-500 uppercase tracking-wide w-8">#</th>
-                    <th className="text-left px-3 py-2 text-xs font-bold text-slate-500 uppercase tracking-wide">{t("studentName")}</th>
-                    <th className="text-center px-3 py-2 text-xs font-bold text-slate-500 uppercase tracking-wide">{t("caAssessments")}</th>
-                    <th className="text-center px-3 py-2 text-xs font-bold text-slate-500 uppercase tracking-wide">{t("examAssessments")}</th>
-                    <th className="text-center px-3 py-2 text-xs font-bold text-blue-600 uppercase tracking-wide bg-blue-50">{lang === "zh" ? "加權總分" : "Weighted Total"}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {studentSummary.map((row, i) => {
-                    const displayName = lang === "zh" && row.student.nameCht ? row.student.nameCht : row.student.name;
-                    return (
-                      <tr key={row.student.id} className={cn("border-b border-slate-100 last:border-0", i % 2 === 0 ? "bg-white" : "bg-slate-50/50")}>
-                        <td className="px-3 py-2 text-xs font-mono text-slate-400">{row.student.classNo}</td>
-                        <td className="px-3 py-2 font-semibold text-slate-800">{displayName}</td>
-                        <td className="px-3 py-2 text-center">
-                          {row.caPct !== null ? <span className={cn("font-mono font-bold", row.caPct >= 70 ? "text-green-600" : row.caPct >= 50 ? "text-amber-600" : "text-red-600")}>{row.caTotalEarned}/{row.caTotalMax} ({row.caPct}%)</span> : <span className="text-slate-300">—</span>}
-                        </td>
-                        <td className="px-3 py-2 text-center">
-                          {row.examPct !== null ? <span className={cn("font-mono font-bold", row.examPct >= 70 ? "text-green-600" : row.examPct >= 50 ? "text-amber-600" : "text-red-600")}>{row.examTotalEarned}/{row.examTotalMax} ({row.examPct}%)</span> : <span className="text-slate-300">—</span>}
-                        </td>
-                        <td className="px-3 py-2 text-center bg-blue-50/40">
-                          {row.weightedTotal !== null ? <span className={cn("font-mono font-bold text-sm", row.weightedTotal >= 70 ? "text-green-600" : row.weightedTotal >= 50 ? "text-amber-600" : "text-red-600")}>{row.weightedTotal}%</span> : <span className="text-slate-300">—</span>}
-                        </td>
-                      </tr>
-                    );
+          <div className="bg-white rounded-xl border border-slate-200 overflow-auto">
+            <table className="w-full text-xs">
+              <thead>
+                {/* Row 1: term group headers */}
+                <tr className="bg-slate-100 border-b border-slate-200">
+                  <th className="px-3 py-1.5 text-left w-8" rowSpan={2}>#</th>
+                  <th className="px-3 py-1.5 text-left min-w-[120px]" rowSpan={2}>{t("studentName")}</th>
+                  {termAssessGroups.map(g => {
+                    const cols = (g.caAssess.length > 0 ? 1 : 0) + (g.examAssess.length > 0 ? 1 : 0);
+                    return <th key={g.term} colSpan={cols} className="px-3 py-1.5 text-center font-bold text-slate-700 border-l border-slate-200">{termLabel(g.term, lang)}</th>;
                   })}
-                </tbody>
-              </table>
-            </div>
+                  <th className="px-3 py-1.5 text-center bg-blue-50 border-l border-slate-200" rowSpan={2}>
+                    <div className="font-bold text-blue-700">{lang === "zh" ? "加權總分" : "Weighted Total"}</div>
+                    {scheme && <div className="text-blue-400 font-normal text-[9px]">{scheme.label}</div>}
+                  </th>
+                </tr>
+                {/* Row 2: CA / Exam sub-headers */}
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  {termAssessGroups.map((g, gi) => (
+                    <React.Fragment key={g.term}>
+                      {g.caAssess.length > 0 && <th className={cn("px-3 py-1 text-center text-[10px] font-semibold text-slate-500", gi === 0 && "border-l border-slate-200")}>{lang === "zh" ? "小測" : "CA"}</th>}
+                      {g.examAssess.length > 0 && <th className={cn("px-3 py-1 text-center text-[10px] font-semibold text-red-500 bg-red-50/40", g.caAssess.length === 0 && gi === 0 && "border-l border-slate-200")}>{lang === "zh" ? "大考" : "Exam"}</th>}
+                    </React.Fragment>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {studentSummary.map((row, i) => {
+                  const displayName = lang === "zh" && row.student.nameCht ? row.student.nameCht : row.student.name;
+                  return (
+                    <tr key={row.student.id} className={cn("border-b border-slate-100 last:border-0", i % 2 === 0 ? "bg-white" : "bg-slate-50/50")}>
+                      <td className="px-3 py-2 font-mono text-slate-400">{row.student.classNo}</td>
+                      <td className="px-3 py-2 font-semibold text-slate-800">{displayName}</td>
+                      {row.termRows.map((tr2, gi) => (
+                        <React.Fragment key={tr2.term}>
+                          {tr2.hasCA && (
+                            <td className={cn("px-3 py-2 text-center", gi === 0 && "border-l border-slate-100")}>
+                              {tr2.caPct !== null ? <span className={cn("font-mono font-bold", tr2.caPct >= 70 ? "text-green-600" : tr2.caPct >= 50 ? "text-amber-600" : "text-red-600")}>{tr2.caTotalEarned}/{tr2.caTotalMax} ({tr2.caPct}%)</span> : <span className="text-slate-300">—</span>}
+                            </td>
+                          )}
+                          {tr2.hasExam && (
+                            <td className={cn("px-3 py-2 text-center bg-red-50/20", !tr2.hasCA && gi === 0 && "border-l border-slate-100")}>
+                              {tr2.examPct !== null ? <span className={cn("font-mono font-bold", tr2.examPct >= 70 ? "text-green-600" : tr2.examPct >= 50 ? "text-amber-600" : "text-red-600")}>{tr2.examTotalEarned}/{tr2.examTotalMax} ({tr2.examPct}%)</span> : <span className="text-slate-300">—</span>}
+                            </td>
+                          )}
+                        </React.Fragment>
+                      ))}
+                      <td className="px-3 py-2 text-center bg-blue-50/40 border-l border-slate-100">
+                        {row.weightedTotal !== null ? <span className={cn("font-mono font-bold text-sm", row.weightedTotal >= 70 ? "text-green-600" : row.weightedTotal >= 50 ? "text-amber-600" : "text-red-600")}>{row.weightedTotal}%</span> : <span className="text-slate-300">—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </TabsContent>
 
         <TabsContent value="questions">
-          <div className="space-y-4">
+          <div className="space-y-6">
             {assessments.length === 0 ? (
               <div className="bg-white rounded-xl border border-slate-200 p-8 text-center text-slate-400 text-sm">{t("noAssessmentsYet")}</div>
-            ) : assessments.map(assessment => {
-              const questions = assessment.markSheet.filter(i => !i.isSection);
-              if (questions.length === 0) return null;
-              const assessTitle = lang === "zh" && assessment.titleCht ? assessment.titleCht : assessment.title;
-              const qData = questions.map(q => {
-                const scores: number[] = [];
-                assessment.scores.forEach((entry: ScoreEntry) => {
-                  const scoreMap = getScoreMap(assessment, entry.studentId);
-                  scores.push(scoreMap[q.id] ?? 0);
+            ) : ORDERED_TERMS.map(term => {
+              const termAssess = assessments.filter(a => a.term === term);
+              if (termAssess.length === 0) return null;
+              const caAssess = termAssess.filter(a => { const n = getNature(a.natureId ?? ""); return n && !n.isExam; });
+              const examAssess = termAssess.filter(a => { const n = getNature(a.natureId ?? ""); return n && n.isExam; });
+              const renderAssessBlock = (assessment: typeof assessments[0], isExam: boolean) => {
+                const questions = assessment.markSheet.filter(i => !i.isSection);
+                if (questions.length === 0) return null;
+                const assessTitle = lang === "zh" && assessment.titleCht ? assessment.titleCht : assessment.title;
+                const qData = questions.map(q => {
+                  const scores: number[] = [];
+                  assessment.scores.forEach((entry: ScoreEntry) => {
+                    const scoreMap = getScoreMap(assessment, entry.studentId);
+                    scores.push(scoreMap[q.id] ?? 0);
+                  });
+                  const avg = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+                  const pct = q.maxMark > 0 ? Math.round((avg / q.maxMark) * 100) : 0;
+                  return { label: q.label, avg: Math.round(avg * 10) / 10, maxMark: q.maxMark, pct };
                 });
-                const avg = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
-                const pct = q.maxMark > 0 ? Math.round((avg / q.maxMark) * 100) : 0;
-                return { label: q.label, avg: Math.round(avg * 10) / 10, maxMark: q.maxMark, pct };
-              });
-              return (
-                <div key={assessment.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                  <div className="px-4 py-2 bg-slate-50 border-b border-slate-200"><p className="text-sm font-bold text-slate-700">{assessTitle}</p></div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead><tr className="border-b border-slate-100"><th className="text-left px-3 py-2 text-xs font-bold text-slate-500">{t("questionLabel")}</th><th className="text-center px-3 py-2 text-xs font-bold text-slate-500">{t("maxMark")}</th><th className="text-center px-3 py-2 text-xs font-bold text-slate-500">{t("avgMark")}</th><th className="text-center px-3 py-2 text-xs font-bold text-slate-500">%</th></tr></thead>
-                      <tbody>
-                        {qData.map((q, i) => (
-                          <tr key={i} className={cn("border-b border-slate-100 last:border-0", i % 2 === 0 ? "bg-white" : "bg-slate-50/50")}>
-                            <td className="px-3 py-1.5 font-mono font-bold text-slate-700">{q.label}</td>
-                            <td className="px-3 py-1.5 text-center font-mono text-slate-500">{q.maxMark}</td>
-                            <td className="px-3 py-1.5 text-center font-mono font-bold text-slate-800">{q.avg}</td>
-                            <td className="px-3 py-1.5 text-center"><span className={cn("font-mono font-bold", q.pct >= 70 ? "text-green-600" : q.pct >= 50 ? "text-amber-600" : "text-red-600")}>{q.pct}%</span></td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                return (
+                  <div key={assessment.id} className={cn("bg-white rounded-xl border overflow-hidden", isExam ? "border-red-200" : "border-slate-200")}>
+                    <div className={cn("px-4 py-2 border-b flex items-center gap-2", isExam ? "bg-red-50 border-red-200" : "bg-slate-50 border-slate-200")}>
+                      <p className="text-sm font-bold text-slate-700">{assessTitle}</p>
+                      {assessment.code && <span className="text-xs text-slate-400 font-mono">({assessment.code})</span>}
+                      {isExam && <span className="text-[9px] font-bold text-red-500 bg-red-100 px-1.5 py-0.5 rounded">{lang === "zh" ? "大考" : "EXAM"}</span>}
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead><tr className="border-b border-slate-100"><th className="text-left px-3 py-2 text-xs font-bold text-slate-500">{t("questionLabel")}</th><th className="text-center px-3 py-2 text-xs font-bold text-slate-500">{t("maxMark")}</th><th className="text-center px-3 py-2 text-xs font-bold text-slate-500">{t("avgMark")}</th><th className="text-center px-3 py-2 text-xs font-bold text-slate-500">%</th></tr></thead>
+                        <tbody>
+                          {qData.map((q, i) => (
+                            <tr key={i} className={cn("border-b border-slate-100 last:border-0", i % 2 === 0 ? "bg-white" : "bg-slate-50/50")}>
+                              <td className="px-3 py-1.5 font-mono font-bold text-slate-700">{q.label}</td>
+                              <td className="px-3 py-1.5 text-center font-mono text-slate-500">{q.maxMark}</td>
+                              <td className="px-3 py-1.5 text-center font-mono font-bold text-slate-800">{q.avg}</td>
+                              <td className="px-3 py-1.5 text-center"><span className={cn("font-mono font-bold", q.pct >= 70 ? "text-green-600" : q.pct >= 50 ? "text-amber-600" : "text-red-600")}>{q.pct}%</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
+                );
+              };
+              return (
+                <div key={term} className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-slate-700">{termLabel(term, lang)}</h3>
+                    <div className="flex-1 h-px bg-slate-200" />
+                  </div>
+                  {caAssess.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{lang === "zh" ? "小測" : "CA Assessments"}</p>
+                      {caAssess.map(a => renderAssessBlock(a, false))}
+                    </div>
+                  )}
+                  {examAssess.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold text-red-500 uppercase tracking-wide">{lang === "zh" ? "大考" : "Exam Assessments"}</p>
+                      {examAssess.map(a => renderAssessBlock(a, true))}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1505,7 +1573,6 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const subject = yearId && subjectId ? getSubject(yearId, subjectId) : undefined;
   const cls = yearId && subjectId && classId ? getClass(yearId, subjectId, classId) : undefined;
 
-  const [copied, setCopied] = useState(false);
   const [summaryFilter, setSummaryFilter] = useState<"all" | "ca" | "exam">("all");
 
   if (!year || !subject || !cls) {
@@ -1514,31 +1581,25 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
   const assessments = cls.assessments ?? [];
   const sortedStudents = [...cls.students].sort((a, b) => a.classNo.localeCompare(b.classNo, undefined, { numeric: true }));
-
-  // Weighting scheme for this class's form + subject
   const scheme = getWeightingScheme(cls.form, subjectId, cls.weightingSchemeId);
 
-  // Per assessment, per student totals (all assessments, for weighted total calculation)
+  // Build enriched assessment list
   const allAssessData = assessments.map(a => {
     const max = getAssessmentMax(a);
     const nature = getNature(a.natureId ?? "");
     const title = lang === "zh" && a.titleCht ? a.titleCht : a.title;
-    return {
-      id: a.id,
-      title,
-      code: a.code,
-      max,
-      isExam: nature?.isExam ?? false,
-      natureName: nature ? (lang === "zh" ? nature.nameCht : nature.name) : "",
-    };
+    return { id: a.id, title, code: a.code, max, term: a.term, isExam: nature?.isExam ?? false };
   });
 
-  // Filtered assessData based on CA/Exam/All toggle
-  const assessData = allAssessData.filter(a => {
-    if (summaryFilter === "ca") return !a.isExam;
-    if (summaryFilter === "exam") return a.isExam;
-    return true;
-  });
+  // Group by term then CA/Exam, respecting the filter
+  const termGroups = ORDERED_TERMS.map(term => {
+    const termAssess = allAssessData.filter(a => a.term === term);
+    const caAssess = termAssess.filter(a => !a.isExam);
+    const examAssess = termAssess.filter(a => a.isExam);
+    const visibleCA = summaryFilter !== "exam" ? caAssess : [];
+    const visibleExam = summaryFilter !== "ca" ? examAssess : [];
+    return { term, caAssess: visibleCA, examAssess: visibleExam, total: visibleCA.length + visibleExam.length };
+  }).filter(g => g.total > 0);
 
   const getStudentAssessmentTotal = (studentId: string, assessmentId: string) => {
     const a = assessments.find(x => x.id === assessmentId);
@@ -1547,13 +1608,14 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   };
 
   const handleExportCSV = () => {
+    const flatAssess = termGroups.flatMap(g => [...g.caAssess, ...g.examAssess]);
     const rows: string[][] = [];
-    rows.push(["#", "Name", ...assessData.map(a => `${a.code || a.title} (/${a.max})`), "Weighted Total (%)"]);
+    rows.push(["#", "Name", ...flatAssess.map(a => `${a.code || a.title} (/${a.max})`), "Weighted Total (%)"]);
     sortedStudents.forEach(s => {
       const wt = calcWeightedTotal(s.id, assessments, getNature, scheme);
-      rows.push([s.classNo, lang === "zh" && s.nameCht ? s.nameCht : s.name, ...assessData.map(a => {
-        const t = getStudentAssessmentTotal(s.id, a.id);
-        return t !== null ? String(t) : "";
+      rows.push([s.classNo, lang === "zh" && s.nameCht ? s.nameCht : s.name, ...flatAssess.map(a => {
+        const total = getStudentAssessmentTotal(s.id, a.id);
+        return total !== null ? String(total) : "";
       }), wt !== null ? `${wt}%` : ""]);
     });
     const csv = rows.map(r => r.join(",")).join("\n");
@@ -1567,22 +1629,17 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     toast.success(t("exportCSV"));
   };
 
+  const totalVisibleCols = termGroups.reduce((s, g) => s + g.caAssess.length + g.examAssess.length, 0);
+
   return (
     <div className="h-full overflow-y-auto p-4 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="text-xl font-bold text-slate-800">{lang === "zh" ? "統測/大考總表" : "Summary Table"} — {cls.name}</h2>
         <div className="flex items-center gap-2">
-          {/* CA / Exam / All filter */}
           <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
             {(["all", "ca", "exam"] as const).map(f => (
-              <button
-                key={f}
-                onClick={() => setSummaryFilter(f)}
-                className={cn(
-                  "px-3 py-1.5 font-semibold transition-colors",
-                  summaryFilter === f ? "bg-blue-500 text-white" : "bg-white text-slate-600 hover:bg-slate-50"
-                )}
-              >
+              <button key={f} onClick={() => setSummaryFilter(f)}
+                className={cn("px-3 py-1.5 font-semibold transition-colors", summaryFilter === f ? "bg-blue-500 text-white" : "bg-white text-slate-600 hover:bg-slate-50")}>
                 {f === "all" ? (lang === "zh" ? "全部" : "All") : f === "ca" ? (lang === "zh" ? "小測" : "CA") : (lang === "zh" ? "大考" : "Exam")}
               </button>
             ))}
@@ -1597,47 +1654,84 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         <div className="bg-white rounded-xl border border-slate-200 overflow-auto">
           <table className="w-full text-xs">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50">
-                <th className="px-3 py-2 text-left sticky left-0 bg-slate-50 w-10">#</th>
-                <th className="px-3 py-2 text-left sticky left-10 bg-slate-50 min-w-[120px]">{t("studentName")}</th>
-                {assessData.map(a => (
-                  <th key={a.id} className="px-2 py-2 text-center min-w-[70px]">
-                    <div className="font-mono font-bold">{a.code || a.title}</div>
-                    <div className="text-slate-400 font-normal">/{a.max}</div>
-                    {a.isExam && <div className="text-red-500 text-[9px]">Exam</div>}
-                  </th>
-                ))}
-                <th className="px-2 py-2 text-center min-w-[90px] bg-blue-50">
-                  <div className="font-bold text-blue-700 text-xs">{lang === "zh" ? "加權總分" : "Weighted Total"}</div>
+              {/* Row 1: Term group headers */}
+              <tr className="border-b border-slate-200 bg-slate-100">
+                <th className="px-3 py-1.5 text-left sticky left-0 bg-slate-100 w-10" rowSpan={2}>#</th>
+                <th className="px-3 py-1.5 text-left sticky left-10 bg-slate-100 min-w-[120px]" rowSpan={2}>{t("studentName")}</th>
+                {termGroups.map(g => {
+                  const span = g.caAssess.length + g.examAssess.length;
+                  return (
+                    <th key={g.term} colSpan={span} className="px-2 py-1.5 text-center font-bold text-slate-700 border-l border-slate-200">
+                      {termLabel(g.term, lang)}
+                    </th>
+                  );
+                })}
+                <th className="px-2 py-1.5 text-center bg-blue-50 border-l border-slate-200" rowSpan={2}>
+                  <div className="font-bold text-blue-700">{lang === "zh" ? "加權總分" : "Weighted Total"}</div>
                   {scheme && <div className="text-blue-400 font-normal text-[9px]">{scheme.label}</div>}
                 </th>
               </tr>
+              {/* Row 2: CA / Exam sub-headers then individual assessment columns */}
+              <tr className="border-b border-slate-200 bg-slate-50">
+                {termGroups.map(g => (
+                  <React.Fragment key={g.term}>
+                    {g.caAssess.length > 0 && (
+                      <>
+                        {g.caAssess.map((a, i) => (
+                          <th key={a.id} className={cn("px-2 py-1.5 text-center min-w-[70px]", i === 0 && "border-l border-slate-200")}>
+                            <div className="text-[9px] font-semibold text-slate-400 uppercase">{lang === "zh" ? "小測" : "CA"}</div>
+                            <div className="font-mono font-bold text-slate-700">{a.code || a.title}</div>
+                            <div className="text-slate-400 font-normal">/{a.max}</div>
+                          </th>
+                        ))}
+                      </>
+                    )}
+                    {g.examAssess.length > 0 && (
+                      <>
+                        {g.examAssess.map((a, i) => (
+                          <th key={a.id} className={cn("px-2 py-1.5 text-center min-w-[70px] bg-red-50/40", i === 0 && g.caAssess.length === 0 && "border-l border-slate-200")}>
+                            <div className="text-[9px] font-semibold text-red-400 uppercase">{lang === "zh" ? "大考" : "Exam"}</div>
+                            <div className="font-mono font-bold text-slate-700">{a.code || a.title}</div>
+                            <div className="text-slate-400 font-normal">/{a.max}</div>
+                          </th>
+                        ))}
+                      </>
+                    )}
+                  </React.Fragment>
+                ))}
+              </tr>
             </thead>
             <tbody>
-              {sortedStudents.map((student, idx) => {
+              {totalVisibleCols === 0 ? (
+                <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-400 text-sm">{lang === "zh" ? "此築選無評估" : "No assessments for this filter"}</td></tr>
+              ) : sortedStudents.map((student, idx) => {
                 const displayName = lang === "zh" && student.nameCht ? student.nameCht : student.name;
                 return (
                   <tr key={student.id} className={cn("border-b border-slate-100 last:border-0", idx % 2 === 0 ? "bg-white" : "bg-slate-50/40")}>
                     <td className="px-3 py-2 font-mono text-slate-400 sticky left-0 bg-inherit">{student.classNo}</td>
                     <td className="px-3 py-2 font-semibold text-slate-800 sticky left-10 bg-inherit">{displayName}</td>
-                    {assessData.map(a => {
-                      const total = getStudentAssessmentTotal(student.id, a.id);
-                      const pct = total !== null && a.max > 0 ? Math.round((total / a.max) * 100) : null;
-                      return (
-                        <td key={a.id} className="px-2 py-2 text-center">
-                          {total !== null ? (
-                            <div>
-                              <span className={cn("font-mono font-bold", pct !== null && pct >= 70 ? "text-green-600" : pct !== null && pct >= 50 ? "text-amber-600" : "text-red-600")}>{total}</span>
-                              {pct !== null && <span className="text-slate-400 text-[10px] ml-0.5">({pct}%)</span>}
-                            </div>
-                          ) : <span className="text-slate-300">—</span>}
-                        </td>
-                      );
-                    })}
+                    {termGroups.map(g => (
+                      <React.Fragment key={g.term}>
+                        {[...g.caAssess, ...g.examAssess].map((a, i) => {
+                          const total = getStudentAssessmentTotal(student.id, a.id);
+                          const pct = total !== null && a.max > 0 ? Math.round((total / a.max) * 100) : null;
+                          return (
+                            <td key={a.id} className={cn("px-2 py-2 text-center", a.isExam && "bg-red-50/20", i === 0 && "border-l border-slate-100")}>
+                              {total !== null ? (
+                                <div>
+                                  <span className={cn("font-mono font-bold", pct !== null && pct >= 70 ? "text-green-600" : pct !== null && pct >= 50 ? "text-amber-600" : "text-red-600")}>{total}</span>
+                                  {pct !== null && <span className="text-slate-400 text-[10px] ml-0.5">({pct}%)</span>}
+                                </div>
+                              ) : <span className="text-slate-300">—</span>}
+                            </td>
+                          );
+                        })}
+                      </React.Fragment>
+                    ))}
                     {(() => {
                       const wt = calcWeightedTotal(student.id, assessments, getNature, scheme);
                       return (
-                        <td className="px-2 py-2 text-center bg-blue-50/60">
+                        <td className="px-2 py-2 text-center bg-blue-50/60 border-l border-slate-100">
                           {wt !== null ? (
                             <span className={cn("font-mono font-bold text-sm", wt >= 70 ? "text-green-600" : wt >= 50 ? "text-amber-600" : "text-red-600")}>{wt}%</span>
                           ) : <span className="text-slate-300">—</span>}
@@ -1657,8 +1751,10 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
 // ─── Tab: Topic Chart Analysis ────────────────────────────────────────────────
 function ChartTab({ yearId, subjectId, classId }: { yearId: string; subjectId: string; classId: string }) {
-  const { getSchoolYear, getSubject, getClass, getGlobalSubject } = useData();
+  const { getSchoolYear, getSubject, getClass, getGlobalSubject, getNature } = useData();
   const { t, lang } = useI18n();
+  const [chartFilter, setChartFilter] = useState<"all" | "ca" | "exam">("all");
+  const [chartTerm, setChartTerm] = useState<Term | "all">("all");
 
   const year = yearId ? getSchoolYear(yearId) : undefined;
   const subject = yearId && subjectId ? getSubject(yearId, subjectId) : undefined;
@@ -1670,11 +1766,21 @@ function ChartTab({ yearId, subjectId, classId }: { yearId: string; subjectId: s
   }
 
   const topics = globalSubject?.topics ?? [];
-  const assessments = cls.assessments ?? [];
+  const allAssessments = cls.assessments ?? [];
 
+  // Filter assessments by selected term and CA/Exam
+  const filteredAssessments = allAssessments.filter(a => {
+    const termMatch = chartTerm === "all" || a.term === chartTerm;
+    const nature = getNature(a.natureId ?? "");
+    const isExam = nature?.isExam ?? false;
+    const typeMatch = chartFilter === "all" || (chartFilter === "ca" ? !isExam : isExam);
+    return termMatch && typeMatch;
+  });
+
+  // Compute topic performance based on filtered assessments
   const topicData = topics.map(topic => {
     let totalEarned = 0, totalMax = 0;
-    assessments.forEach(assessment => {
+    filteredAssessments.forEach(assessment => {
       const topicItems = assessment.markSheet.filter(i => !i.isSection && i.topicId === topic.id);
       if (topicItems.length === 0) return;
       assessment.scores.forEach((scoreEntry: ScoreEntry) => {
@@ -1709,18 +1815,40 @@ function ChartTab({ yearId, subjectId, classId }: { yearId: string; subjectId: s
     }, new Map<string, { name: string; earned: number; max: number }>()).values()
   ).map(unit => {
     const pct = unit.max > 0 ? Math.round((unit.earned / unit.max) * 100) : null;
-    return {
-      ...unit,
-      pct,
-      status: pct === null ? "none" : pct >= 70 ? "strong" : pct >= 50 ? "average" : "weak",
-    };
+    return { ...unit, pct, status: pct === null ? "none" : pct >= 70 ? "strong" : pct >= 50 ? "average" : "weak" };
   });
 
   const colorForStatus = (status: string) => status === "strong" ? "#22c55e" : status === "average" ? "#f59e0b" : status === "weak" ? "#ef4444" : "#94a3b8";
 
+  // Available terms for selector
+  const availableTerms = ORDERED_TERMS.filter(term => allAssessments.some(a => a.term === term));
+
   return (
     <div className="h-full overflow-y-auto p-4 space-y-4">
-      <h2 className="text-xl font-bold text-slate-800">{lang === "zh" ? "課題圖表分析" : "Topic Chart Analysis"} — {cls.name}</h2>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="text-xl font-bold text-slate-800">{lang === "zh" ? "課題圖表分析" : "Topic Chart Analysis"} — {cls.name}</h2>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Term selector */}
+          <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
+            <button onClick={() => setChartTerm("all")} className={cn("px-3 py-1.5 font-semibold transition-colors", chartTerm === "all" ? "bg-slate-700 text-white" : "bg-white text-slate-600 hover:bg-slate-50")}>
+              {lang === "zh" ? "全學期" : "All Terms"}
+            </button>
+            {availableTerms.map(term => (
+              <button key={term} onClick={() => setChartTerm(term)} className={cn("px-3 py-1.5 font-semibold transition-colors", chartTerm === term ? "bg-slate-700 text-white" : "bg-white text-slate-600 hover:bg-slate-50")}>
+                {termLabel(term, lang)}
+              </button>
+            ))}
+          </div>
+          {/* CA/Exam filter */}
+          <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
+            {(["all", "ca", "exam"] as const).map(f => (
+              <button key={f} onClick={() => setChartFilter(f)} className={cn("px-3 py-1.5 font-semibold transition-colors", chartFilter === f ? "bg-blue-500 text-white" : "bg-white text-slate-600 hover:bg-slate-50")}>
+                {f === "all" ? (lang === "zh" ? "全部" : "All") : f === "ca" ? (lang === "zh" ? "小測" : "CA") : (lang === "zh" ? "大考" : "Exam")}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
 
       {topics.length === 0 ? (
         <div className="bg-white rounded-xl border border-slate-200 p-8 text-center text-slate-400 text-sm">{t("noTopicsYet")}</div>
@@ -1745,53 +1873,61 @@ function ChartTab({ yearId, subjectId, classId }: { yearId: string; subjectId: s
             </div>
           )}
 
-          <div className="bg-white rounded-xl border border-slate-200 p-4">
-            <h3 className="text-sm font-bold text-slate-700 mb-3">{t("topicPerformance")} — {lang === "zh" ? "班級平均 (%)" : "Class Average (%)"}</h3>
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={actualTopicData} margin={{ top: 5, right: 10, left: 0, bottom: 60 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-35} textAnchor="end" interval={0} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} />
-                <Tooltip formatter={(v: unknown) => [(typeof v === "number" ? `${v}%` : "No data"), t("classAverage")]} />
-                <ReferenceLine y={70} stroke="#22c55e" strokeDasharray="4 4" label={{ value: "70%", fontSize: 9, fill: "#22c55e" }} />
-                <ReferenceLine y={50} stroke="#f59e0b" strokeDasharray="4 4" label={{ value: "50%", fontSize: 9, fill: "#f59e0b" }} />
-                <Bar dataKey="pct" radius={[4, 4, 0, 0]}>
-                  {actualTopicData.map((entry, i) => <Cell key={i} fill={colorForStatus(entry.status)} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          {actualTopicData.length > 0 ? (
+            <>
+              <div className="bg-white rounded-xl border border-slate-200 p-4">
+                <h3 className="text-sm font-bold text-slate-700 mb-3">{t("topicPerformance")} — {lang === "zh" ? "班級平均 (%)" : "Class Average (%)"}</h3>
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={actualTopicData} margin={{ top: 5, right: 10, left: 0, bottom: 60 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                    <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-35} textAnchor="end" interval={0} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} />
+                    <Tooltip formatter={(v: unknown) => [(typeof v === "number" ? `${v}%` : "No data"), t("classAverage")]} />
+                    <ReferenceLine y={70} stroke="#22c55e" strokeDasharray="4 4" label={{ value: "70%", fontSize: 9, fill: "#22c55e" }} />
+                    <ReferenceLine y={50} stroke="#f59e0b" strokeDasharray="4 4" label={{ value: "50%", fontSize: 9, fill: "#f59e0b" }} />
+                    <Bar dataKey="pct" radius={[4, 4, 0, 0]}>
+                      {actualTopicData.map((entry, i) => <Cell key={i} fill={colorForStatus(entry.status)} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
 
-          {actualTopicData.length >= 3 && (
-            <div className="bg-white rounded-xl border border-slate-200 p-4">
-              <h3 className="text-sm font-bold text-slate-700 mb-3">{lang === "zh" ? "課題雷達圖" : "Topic Radar Chart"}</h3>
-              <ResponsiveContainer width="100%" height={280}>
-                <RadarChart data={actualTopicData}>
-                  <PolarGrid stroke="#e2e8f0" />
-                  <PolarAngleAxis dataKey="name" tick={{ fontSize: 10 }} />
-                  <PolarRadiusAxis domain={[0, 100]} tick={{ fontSize: 8 }} />
-                  <Radar dataKey="pct" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} />
-                </RadarChart>
-              </ResponsiveContainer>
+              {actualTopicData.length >= 3 && (
+                <div className="bg-white rounded-xl border border-slate-200 p-4">
+                  <h3 className="text-sm font-bold text-slate-700 mb-3">{lang === "zh" ? "課題雷達圖" : "Topic Radar Chart"}</h3>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <RadarChart data={actualTopicData}>
+                      <PolarGrid stroke="#e2e8f0" />
+                      <PolarAngleAxis dataKey="name" tick={{ fontSize: 10 }} />
+                      <PolarRadiusAxis domain={[0, 100]} tick={{ fontSize: 8 }} />
+                      <Radar dataKey="pct" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} />
+                    </RadarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {actualTopicData.map(topic => (
+                  <div key={topic.id} className={cn("bg-white rounded-xl border-2 p-4", topic.status === "strong" ? "border-green-200" : topic.status === "average" ? "border-amber-200" : topic.status === "weak" ? "border-red-200" : "border-slate-200")}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">{topic.learningUnit}</p>
+                        <p className="text-sm font-bold text-slate-800 mt-1">{topic.name}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className={cn("text-2xl font-bold font-mono", topic.status === "strong" ? "text-green-600" : topic.status === "average" ? "text-amber-600" : "text-red-600")}>{topic.pct}%</p>
+                        <p className={cn("text-xs font-semibold", topic.status === "strong" ? "text-green-500" : topic.status === "average" ? "text-amber-500" : "text-red-500")}>{topic.status === "strong" ? t("strong") : topic.status === "average" ? t("average") : t("weak")}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="bg-white rounded-xl border border-slate-200 p-8 text-center text-slate-400 text-sm">
+              {lang === "zh" ? "此築選無課題成績數據" : "No topic data for this filter"}
             </div>
           )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {actualTopicData.map(topic => (
-              <div key={topic.id} className={cn("bg-white rounded-xl border-2 p-4", topic.status === "strong" ? "border-green-200" : topic.status === "average" ? "border-amber-200" : topic.status === "weak" ? "border-red-200" : "border-slate-200")}>
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">{topic.learningUnit}</p>
-                    <p className="text-sm font-bold text-slate-800 mt-1">{topic.name}</p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className={cn("text-2xl font-bold font-mono", topic.status === "strong" ? "text-green-600" : topic.status === "average" ? "text-amber-600" : "text-red-600")}>{topic.pct}%</p>
-                    <p className={cn("text-xs font-semibold", topic.status === "strong" ? "text-green-500" : topic.status === "average" ? "text-amber-500" : "text-red-500")}>{topic.status === "strong" ? t("strong") : topic.status === "average" ? t("average") : t("weak")}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
         </>
       )}
     </div>
@@ -2046,7 +2182,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Assessment history */}
+            {/* Assessment history — grouped by term then CA/Exam */}
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
               <div className="px-4 py-2 bg-slate-50 border-b border-slate-200"><p className="text-sm font-bold text-slate-700">{t("assessmentHistory")}</p></div>
               {gradedAssessments.length > 0 && (
@@ -2064,20 +2200,65 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                   </ResponsiveContainer>
                 </div>
               )}
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead><tr className="border-b border-slate-100 bg-slate-50/50"><th className="text-left px-3 py-1.5 text-xs font-bold text-slate-500">{t("assessment")}</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("score")}</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">%</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("rank")}</th></tr></thead>
-                  <tbody>
-                    {assessmentHistory.map(a => (
-                      <tr key={a.id} className="border-b border-slate-100 last:border-0">
-                        <td className="px-3 py-1.5"><div><span className="font-semibold text-slate-800 text-xs">{a.title}</span>{a.code && <span className="text-slate-400 text-xs ml-1">({a.code})</span>}</div></td>
-                        <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.total !== null ? `${a.total}/${a.max}` : "—"}</td>
-                        <td className="px-2 py-1.5 text-center">{a.pct !== null ? <span className={cn("font-mono font-bold text-xs", a.pct >= 70 ? "text-green-600" : a.pct >= 50 ? "text-amber-600" : "text-red-600")}>{a.pct}%</span> : <span className="text-slate-300 text-xs">—</span>}</td>
-                        <td className="px-2 py-1.5 text-center font-mono text-slate-500 text-xs">{a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              {/* Grouped by term then CA/Exam */}
+              <div className="divide-y divide-slate-100">
+                {ORDERED_TERMS.map(term => {
+                  const termItems = assessmentHistory.filter(a => {
+                    const rawAssess = assessments.find(ra => ra.id === a.id);
+                    return rawAssess?.term === term;
+                  });
+                  if (termItems.length === 0) return null;
+                  const caItems = termItems.filter(a => !a.isExam);
+                  const examItems = termItems.filter(a => a.isExam);
+                  return (
+                    <div key={term}>
+                      {/* Term header */}
+                      <div className="px-3 py-1 bg-slate-100 flex items-center gap-1.5">
+                        <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wide">{termLabel(term, lang)}</span>
+                      </div>
+                      {/* CA section */}
+                      {caItems.length > 0 && (
+                        <>
+                          <div className="px-3 py-0.5 bg-slate-50">
+                            <span className="text-[9px] font-semibold text-slate-400 uppercase tracking-wider">{lang === "zh" ? "小測" : "CA"}</span>
+                          </div>
+                          <table className="w-full text-sm">
+                            <tbody>
+                              {caItems.map(a => (
+                                <tr key={a.id} className="border-b border-slate-50 last:border-0">
+                                  <td className="px-3 py-1.5"><div><span className="font-semibold text-slate-800 text-xs">{a.title}</span>{a.code && <span className="text-slate-400 text-xs ml-1">({a.code})</span>}</div></td>
+                                  <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.total !== null ? `${a.total}/${a.max}` : "—"}</td>
+                                  <td className="px-2 py-1.5 text-center">{a.pct !== null ? <span className={cn("font-mono font-bold text-xs", a.pct >= 70 ? "text-green-600" : a.pct >= 50 ? "text-amber-600" : "text-red-600")}>{a.pct}%</span> : <span className="text-slate-300 text-xs">—</span>}</td>
+                                  <td className="px-2 py-1.5 text-center font-mono text-slate-500 text-xs">{a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </>
+                      )}
+                      {/* Exam section */}
+                      {examItems.length > 0 && (
+                        <>
+                          <div className="px-3 py-0.5 bg-red-50">
+                            <span className="text-[9px] font-semibold text-red-400 uppercase tracking-wider">{lang === "zh" ? "大考" : "Exam"}</span>
+                          </div>
+                          <table className="w-full text-sm">
+                            <tbody>
+                              {examItems.map(a => (
+                                <tr key={a.id} className="border-b border-red-50/60 last:border-0 bg-red-50/10">
+                                  <td className="px-3 py-1.5"><div><span className="font-semibold text-slate-800 text-xs">{a.title}</span>{a.code && <span className="text-slate-400 text-xs ml-1">({a.code})</span>}</div></td>
+                                  <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.total !== null ? `${a.total}/${a.max}` : "—"}</td>
+                                  <td className="px-2 py-1.5 text-center">{a.pct !== null ? <span className={cn("font-mono font-bold text-xs", a.pct >= 70 ? "text-green-600" : a.pct >= 50 ? "text-amber-600" : "text-red-600")}>{a.pct}%</span> : <span className="text-slate-300 text-xs">—</span>}</td>
+                                  <td className="px-2 py-1.5 text-center font-mono text-slate-500 text-xs">{a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
