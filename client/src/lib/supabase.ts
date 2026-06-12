@@ -567,19 +567,28 @@ export async function saveMarkSheet(assessmentId: string, items: MarkItem[]) {
   }
 }
 
-/** Upsert a student's scores for an assessment */
+/** Save a student's scores for an assessment (delete-then-insert for reliability) */
 export async function upsertScoreDb(assessmentId: string, entry: ScoreEntry) {
-  const rows = Object.entries(entry.scores).map(([markItemId, value]) => ({
-    assessment_id: assessmentId,
-    student_id: entry.studentId,
-    mark_item_id: markItemId,
-    value: value,
-  }));
+  const rows = Object.entries(entry.scores)
+    .filter(([, value]) => value !== null && value !== undefined)
+    .map(([markItemId, value]) => ({
+      assessment_id: assessmentId,
+      student_id: entry.studentId,
+      mark_item_id: markItemId,
+      value: value,
+    }));
+  // Delete existing scores for this student+assessment, then re-insert
+  const { error: delError } = await supabase
+    .from('sqgs_scores')
+    .delete()
+    .eq('assessment_id', assessmentId)
+    .eq('student_id', entry.studentId);
+  if (delError) { console.error('upsertScore delete error:', delError); return; }
   if (rows.length === 0) return;
   const { error } = await supabase
     .from('sqgs_scores')
-    .upsert(rows, { onConflict: 'assessment_id,student_id,mark_item_id' });
-  if (error) console.error('upsertScore error:', error);
+    .insert(rows);
+  if (error) console.error('upsertScore insert error:', error);
 }
 
 /** Delete all scores for a student in an assessment */
