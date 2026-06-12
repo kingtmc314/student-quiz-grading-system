@@ -9,13 +9,30 @@
  *  - Assessments with code, date, term, nature, teacher, topics covered
  *  - Mark sheets with per-item topic tagging
  *  - Score entries per student
+ *
+ * Persistence: Supabase relational tables (sqgs_*) with localStorage fallback
  */
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
 import { nanoid } from "nanoid";
-import { loadAppState, saveAppState } from "@/lib/supabase";
+import {
+  loadFullState, saveFullState,
+  saveTeachers, deleteTeacherDb,
+  saveNatures, deleteNatureDb,
+  saveSubject, deleteSubjectDb,
+  saveTopics, deleteTopicDb, replaceSubjectTopicsDb,
+  saveWeightingScheme, deleteWeightingSchemeDb,
+  saveSyllabusItems,
+  saveSchoolYear, deleteSchoolYearDb,
+  ensureYearSubject, removeYearSubjectDb,
+  saveClass, deleteClassDb,
+  saveStudent, deleteStudentDb, replaceClassStudents,
+  saveAssessment, deleteAssessmentDb,
+  saveMarkSheet,
+  upsertScoreDb, deleteScoreDb,
+} from "@/lib/supabase";
 
-// ─── Persistence helpers (Supabase cloud + localStorage fallback) ─────────────
+// ─── Persistence helpers (localStorage fallback) ──────────────────────────────
 
 const STORAGE_KEY = "sqgs_data_v1";
 
@@ -50,87 +67,86 @@ function saveToLocalStorage(data: PersistedData) {
 
 export interface SyllabusItem {
   id: string;
-  level: "Junior" | "Senior" | string;  // Junior (S1-S3) or Senior (S4-S6)
-  strand: string;          // e.g. "Number and Algebra"
-  learningUnit: string;    // e.g. "1. Basic computation"
-  learningObjective: string; // e.g. "1.1 recognise the tests of divisibility..."
-  category: string;        // e.g. "Foundation" | "Non-Foundation"
-  remarks: string;         // optional notes
+  level: "Junior" | "Senior" | string;
+  strand: string;
+  learningUnit: string;
+  learningObjective: string;
+  category: string;
+  remarks: string;
 }
 
 export interface Teacher {
   id: string;
-  name: string;       // English
-  nameCht: string;    // Traditional Chinese
-  code: string;       // e.g. "MTC"
+  name: string;
+  nameCht: string;
+  code: string;
   email: string;
 }
 
 export interface AssessmentNature {
   id: string;
-  name: string;       // English
-  nameCht: string;    // Traditional Chinese
-  color: string;      // e.g. "blue" | "amber" | "red" | "green" | "purple"
-  isExam: boolean;    // true = excluded from CA, tracked separately
+  name: string;
+  nameCht: string;
+  color: string;
+  isExam: boolean;
 }
 
 export interface WeightEntry {
   natureId: string;
-  percentage: number; // 0–100, CA natures only
+  percentage: number;
 }
 
 export interface WeightingScheme {
   id: string;
-  form: string;         // e.g. "S6"
-  subjectId: string;    // global Subject.id
-  label: string;        // display name
+  form: string;
+  subjectId: string;
+  label: string;
   caEntries: WeightEntry[];
   examPercentage: number;
 }
 
 export interface Topic {
   id: string;
-  code: string;         // e.g. "M2-01" or auto-generated from syllabus
-  name: string;         // English (= learningObjective when from syllabus)
-  nameCht: string;      // Traditional Chinese
+  code: string;
+  name: string;
+  nameCht: string;
   order: number;
-  color?: string;       // optional hex colour for topic badge
-  // Syllabus fields — populated when imported from Excel (hierarchy: Level → Learning Unit → Objective)
-  level?: string;             // "Junior" | "Senior"
-  learningUnit?: string;      // e.g. "1. Basic computation"
-  learningObjective?: string; // e.g. "1.1 recognise the tests of divisibility..."
-  strand?: string;            // e.g. "Number and Algebra"
-  category?: string;          // "Foundation" | "Non-Foundation"
+  color?: string;
+  level?: string;
+  learningUnit?: string;
+  learningObjective?: string;
+  strand?: string;
+  category?: string;
   remarks?: string;
 }
 
 export interface Subject {
-  id: string;           // stable global ID
-  name: string;         // English
-  nameCht: string;      // Traditional Chinese
-  code: string;         // e.g. "M2"
-  form: string;         // e.g. "S6"
+  id: string;
+  name: string;
+  nameCht: string;
+  code: string;
+  form: string;
   topics: Topic[];
 }
 
 export interface Student {
   id: string;
-  classNo: string;      // e.g. "01"
-  name: string;         // English
-  nameCht: string;      // Traditional Chinese
+  classNo: string;
+  name: string;
+  nameCht: string;
 }
 
 export interface MarkItem {
   id: string;
-  label: string;        // e.g. "1", "2(a)", "6(a)(i)"
+  label: string;
   maxMark: number;
-  isSection: boolean;   // section header row (no score)
-  topicId?: string;     // optional link to Topic.id
+  isSection: boolean;
+  topicId?: string;
 }
 
 export interface ScoreEntry {
   studentId: string;
-  scores: Record<string, number | null>; // MarkItem.id -> score
+  scores: Record<string, number | null>;
   submittedAt?: string;
 }
 
@@ -138,28 +154,27 @@ export type Term = "Term 1" | "Term 2" | "Full Year";
 
 export interface Assessment {
   id: string;
-  code: string;         // teacher-typed, e.g. "T1Q1"
-  title: string;        // English
-  titleCht: string;     // Traditional Chinese
+  code: string;
+  title: string;
+  titleCht: string;
   term: Term;
   natureId: string;
   teacherId: string;
-  date: string;         // ISO date
-  topicIds: string[];   // topics covered
+  date: string;
+  topicIds: string[];
   markSheet: MarkItem[];
   scores: ScoreEntry[];
 }
 
 export interface Class {
   id: string;
-  name: string;         // e.g. "6A"
-  form: string;         // e.g. "S6"
+  name: string;
+  form: string;
   teacherId: string;
   students: Student[];
   assessments: Assessment[];
 }
 
-/** Link between a school year and a global subject, containing classes */
 export interface YearSubject {
   subjectId: string;
   classes: Class[];
@@ -167,80 +182,65 @@ export interface YearSubject {
 
 export interface SchoolYear {
   id: string;
-  label: string;        // e.g. "2025-26"
+  label: string;
   subjects: YearSubject[];
 }
 
 // ─── Context shape ────────────────────────────────────────────────────────────
 
 interface DataContextType {
-  // Global registries
   teachers: Teacher[];
   natures: AssessmentNature[];
   weightingSchemes: WeightingScheme[];
   subjects: Subject[];
   schoolYears: SchoolYear[];
 
-  // Teacher CRUD
   addTeacher: (t: Omit<Teacher, "id">) => void;
   updateTeacher: (id: string, t: Partial<Teacher>) => void;
   deleteTeacher: (id: string) => void;
 
-  // Nature CRUD
   addNature: (n: Omit<AssessmentNature, "id">) => void;
   updateNature: (id: string, n: Partial<AssessmentNature>) => void;
   deleteNature: (id: string) => void;
 
-  // Weighting scheme CRUD
   addWeightingScheme: (w: Omit<WeightingScheme, "id">) => void;
   updateWeightingScheme: (id: string, w: Partial<WeightingScheme>) => void;
   deleteWeightingScheme: (id: string) => void;
 
-  // Subject CRUD (global)
   addSubject: (s: Omit<Subject, "id" | "topics">) => Subject;
   updateSubject: (id: string, s: Partial<Omit<Subject, "topics">>) => void;
   deleteSubject: (id: string) => void;
 
-  // Topic CRUD
   addTopic: (subjectId: string, t: Omit<Topic, "id" | "order">) => void;
   updateTopic: (subjectId: string, topicId: string, t: Partial<Topic>) => void;
   deleteTopic: (subjectId: string, topicId: string) => void;
   reorderTopics: (subjectId: string, orderedIds: string[]) => void;
-  // Replace all syllabus-sourced topics for a subject atomically
   replaceTopicsFromSyllabus: (subjectId: string, topics: Omit<Topic, "id" | "order">[]) => void;
 
-  // School year CRUD
   addSchoolYear: (label: string) => void;
   deleteSchoolYear: (yearId: string) => void;
 
-  // Year-subject linking
   addSubjectToYear: (yearId: string, subjectId: string) => void;
   removeSubjectFromYear: (yearId: string, subjectId: string) => void;
 
-  // Class CRUD
   addClass: (yearId: string, subjectId: string, cls: Omit<Class, "id" | "students" | "assessments">) => void;
   updateClass: (yearId: string, subjectId: string, classId: string, cls: Partial<Omit<Class, "students" | "assessments">>) => void;
   deleteClass: (yearId: string, subjectId: string, classId: string) => void;
 
-  // Student CRUD
   addStudent: (yearId: string, subjectId: string, classId: string, s: Omit<Student, "id">) => void;
   updateStudent: (yearId: string, subjectId: string, classId: string, studentId: string, s: Partial<Student>) => void;
   deleteStudent: (yearId: string, subjectId: string, classId: string, studentId: string) => void;
   importStudents: (yearId: string, subjectId: string, classId: string, students: Omit<Student, "id">[]) => void;
 
-  // Assessment CRUD
   addAssessment: (yearId: string, subjectId: string, classId: string, a: Omit<Assessment, "id" | "markSheet" | "scores">) => Assessment;
   updateAssessment: (yearId: string, subjectId: string, classId: string, assessmentId: string, a: Partial<Omit<Assessment, "markSheet" | "scores">>) => void;
   deleteAssessment: (yearId: string, subjectId: string, classId: string, assessmentId: string) => void;
 
-  // Mark sheet
   updateMarkSheet: (yearId: string, subjectId: string, classId: string, assessmentId: string, items: MarkItem[]) => void;
 
-  // Scores
   upsertScore: (yearId: string, subjectId: string, classId: string, assessmentId: string, entry: ScoreEntry) => void;
   deleteScore: (yearId: string, subjectId: string, classId: string, assessmentId: string, studentId: string) => void;
 
-  // Getters
   getSchoolYear: (yearId: string) => SchoolYear | undefined;
   getYearSubject: (yearId: string, subjectId: string) => YearSubject | undefined;
   getClass: (yearId: string, subjectId: string, classId: string) => Class | undefined;
@@ -249,12 +249,18 @@ interface DataContextType {
   getTeacher: (teacherId: string) => Teacher | undefined;
   getNature: (natureId: string) => AssessmentNature | undefined;
   getWeightingScheme: (form: string, subjectId: string) => WeightingScheme | undefined;
-  // Syllabus
+
   syllabusItems: SyllabusItem[];
   setSyllabusItems: (items: SyllabusItem[]) => void;
 
-  // Legacy compat
   getSubject: (yearId: string, subjectId: string) => Subject | undefined;
+
+  // Backup/restore
+  exportData: () => PersistedData;
+  importData: (data: PersistedData) => Promise<void>;
+
+  // Sync status
+  syncStatus: 'idle' | 'loading' | 'saving' | 'error';
 }
 
 // ─── Seed data ────────────────────────────────────────────────────────────────
@@ -391,7 +397,6 @@ const SEED_YEARS: SchoolYear[] = [
 const DataContext = createContext<DataContextType | null>(null);
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
-  // Start with localStorage data (instant load) then hydrate from Supabase
   const localData = loadFromLocalStorage();
 
   const [teachers, setTeachers] = useState<Teacher[]>(localData?.teachers ?? SEED_TEACHERS);
@@ -400,44 +405,56 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [subjects, setSubjects] = useState<Subject[]>(localData?.subjects ?? SEED_SUBJECTS);
   const [schoolYears, setSchoolYears] = useState<SchoolYear[]>(localData?.schoolYears ?? SEED_YEARS);
   const [syllabusItems, setSyllabusItemsState] = useState<SyllabusItem[]>(localData?.syllabusItems ?? []);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'loading' | 'saving' | 'error'>('loading');
 
   // Track whether we've loaded from Supabase yet
   const hydrated = useRef(false);
 
   // On mount: load from Supabase and override local state
   useEffect(() => {
-    loadAppState().then(remote => {
-      if (!remote) return; // no remote data yet — keep local/seed
-      const d = remote as unknown as PersistedData;
-      // Only apply remote data if it has meaningful content (non-empty arrays)
-      // This prevents an empty Supabase blob from wiping out local data
-      if (Array.isArray(d.teachers) && d.teachers.length > 0)        setTeachers(d.teachers);
-      if (Array.isArray(d.natures) && d.natures.length > 0)          setNatures(d.natures);
-      if (Array.isArray(d.weightingSchemes))                          setWeightingSchemes(d.weightingSchemes);
-      if (Array.isArray(d.subjects) && d.subjects.length > 0)        setSubjects(d.subjects);
-      if (Array.isArray(d.schoolYears) && d.schoolYears.length > 0)  setSchoolYears(d.schoolYears);
-      if (Array.isArray(d.syllabusItems))                              setSyllabusItemsState(d.syllabusItems);
+    setSyncStatus('loading');
+    loadFullState().then(remote => {
+      if (!remote) {
+        // No remote data — seed the DB with local/seed data
+        setSyncStatus('saving');
+        const seedData = {
+          teachers: localData?.teachers ?? SEED_TEACHERS,
+          natures: localData?.natures ?? SEED_NATURES,
+          weightingSchemes: localData?.weightingSchemes ?? SEED_WEIGHTING,
+          subjects: localData?.subjects ?? SEED_SUBJECTS,
+          schoolYears: localData?.schoolYears ?? SEED_YEARS,
+          syllabusItems: localData?.syllabusItems ?? [],
+        };
+        saveFullState(seedData).then(() => {
+          setSyncStatus('idle');
+        }).catch(() => setSyncStatus('error'));
+        hydrated.current = true;
+        return;
+      }
+      // Apply remote data
+      if (remote.teachers.length > 0)        setTeachers(remote.teachers);
+      if (remote.natures.length > 0)         setNatures(remote.natures);
+      if (remote.weightingSchemes.length > 0) setWeightingSchemes(remote.weightingSchemes);
+      if (remote.subjects.length > 0)        setSubjects(remote.subjects);
+      if (remote.schoolYears.length > 0)     setSchoolYears(remote.schoolYears);
+      setSyllabusItemsState(remote.syllabusItems);
       hydrated.current = true;
+      setSyncStatus('idle');
+    }).catch(() => {
+      hydrated.current = true;
+      setSyncStatus('error');
     });
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Debounce ref for Supabase saves
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Persist to both localStorage and Supabase whenever any state changes
+  // Keep localStorage in sync with all state changes
   useEffect(() => {
     const data: PersistedData = { teachers, natures, weightingSchemes, subjects, schoolYears, syllabusItems };
-    // Always save to localStorage immediately (offline fallback)
     saveToLocalStorage(data);
-    // Debounce Supabase saves to avoid hammering on rapid changes
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      saveAppState(data as unknown as Record<string, unknown>);
-    }, 800);
   }, [teachers, natures, weightingSchemes, subjects, schoolYears, syllabusItems]);
 
   const setSyllabusItems = useCallback((items: SyllabusItem[]) => {
     setSyllabusItemsState(items);
+    saveSyllabusItems(items).catch(console.error);
   }, []);
 
   // ── Mutation helpers ──────────────────────────────────────────────────────
@@ -473,37 +490,71 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   // ── Teacher CRUD ──────────────────────────────────────────────────────────
 
   const addTeacher = useCallback((t: Omit<Teacher, "id">) => {
-    setTeachers(prev => [...prev, { ...t, id: nanoid() }]);
+    const nt: Teacher = { ...t, id: nanoid() };
+    setTeachers(prev => {
+      const next = [...prev, nt];
+      saveTeachers(next).catch(console.error);
+      return next;
+    });
   }, []);
+
   const updateTeacher = useCallback((id: string, t: Partial<Teacher>) => {
-    setTeachers(prev => prev.map(x => x.id === id ? { ...x, ...t } : x));
+    setTeachers(prev => {
+      const next = prev.map(x => x.id === id ? { ...x, ...t } : x);
+      saveTeachers(next).catch(console.error);
+      return next;
+    });
   }, []);
+
   const deleteTeacher = useCallback((id: string) => {
     setTeachers(prev => prev.filter(x => x.id !== id));
+    deleteTeacherDb(id).catch(console.error);
   }, []);
 
   // ── Nature CRUD ───────────────────────────────────────────────────────────
 
   const addNature = useCallback((n: Omit<AssessmentNature, "id">) => {
-    setNatures(prev => [...prev, { ...n, id: nanoid() }]);
+    const nn: AssessmentNature = { ...n, id: nanoid() };
+    setNatures(prev => {
+      const next = [...prev, nn];
+      saveNatures(next).catch(console.error);
+      return next;
+    });
   }, []);
+
   const updateNature = useCallback((id: string, n: Partial<AssessmentNature>) => {
-    setNatures(prev => prev.map(x => x.id === id ? { ...x, ...n } : x));
+    setNatures(prev => {
+      const next = prev.map(x => x.id === id ? { ...x, ...n } : x);
+      saveNatures(next).catch(console.error);
+      return next;
+    });
   }, []);
+
   const deleteNature = useCallback((id: string) => {
     setNatures(prev => prev.filter(x => x.id !== id));
+    deleteNatureDb(id).catch(console.error);
   }, []);
 
   // ── Weighting CRUD ────────────────────────────────────────────────────────
 
   const addWeightingScheme = useCallback((w: Omit<WeightingScheme, "id">) => {
-    setWeightingSchemes(prev => [...prev, { ...w, id: nanoid() }]);
+    const nw: WeightingScheme = { ...w, id: nanoid() };
+    setWeightingSchemes(prev => [...prev, nw]);
+    saveWeightingScheme(nw).catch(console.error);
   }, []);
+
   const updateWeightingScheme = useCallback((id: string, w: Partial<WeightingScheme>) => {
-    setWeightingSchemes(prev => prev.map(x => x.id === id ? { ...x, ...w } : x));
+    setWeightingSchemes(prev => {
+      const next = prev.map(x => x.id === id ? { ...x, ...w } : x);
+      const updated = next.find(x => x.id === id);
+      if (updated) saveWeightingScheme(updated).catch(console.error);
+      return next;
+    });
   }, []);
+
   const deleteWeightingScheme = useCallback((id: string) => {
     setWeightingSchemes(prev => prev.filter(x => x.id !== id));
+    deleteWeightingSchemeDb(id).catch(console.error);
   }, []);
 
   // ── Subject CRUD ──────────────────────────────────────────────────────────
@@ -511,67 +562,104 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const addSubject = useCallback((s: Omit<Subject, "id" | "topics">): Subject => {
     const ns: Subject = { ...s, id: nanoid(), topics: [] };
     setSubjects(prev => [...prev, ns]);
+    saveSubject(ns).catch(console.error);
     return ns;
   }, []);
+
   const updateSubject = useCallback((id: string, s: Partial<Omit<Subject, "topics">>) => {
-    setSubjects(prev => prev.map(x => x.id === id ? { ...x, ...s } : x));
+    setSubjects(prev => {
+      const next = prev.map(x => x.id === id ? { ...x, ...s } : x);
+      const updated = next.find(x => x.id === id);
+      if (updated) saveSubject(updated).catch(console.error);
+      return next;
+    });
   }, []);
+
   const deleteSubject = useCallback((id: string) => {
     setSubjects(prev => prev.filter(x => x.id !== id));
+    deleteSubjectDb(id).catch(console.error);
   }, []);
 
   // ── Topic CRUD ────────────────────────────────────────────────────────────
 
   const addTopic = useCallback((subjectId: string, t: Omit<Topic, "id" | "order">) => {
-    setSubjects(prev => prev.map(s => {
-      if (s.id !== subjectId) return s;
-      return { ...s, topics: [...s.topics, { ...t, id: nanoid(), order: s.topics.length + 1 }] };
-    }));
+    setSubjects(prev => {
+      const next = prev.map(s => {
+        if (s.id !== subjectId) return s;
+        const nt: Topic = { ...t, id: nanoid(), order: s.topics.length + 1 };
+        const updated = { ...s, topics: [...s.topics, nt] };
+        saveTopics(subjectId, updated.topics).catch(console.error);
+        return updated;
+      });
+      return next;
+    });
   }, []);
+
   const updateTopic = useCallback((subjectId: string, topicId: string, t: Partial<Topic>) => {
-    setSubjects(prev => prev.map(s => {
-      if (s.id !== subjectId) return s;
-      return { ...s, topics: s.topics.map(tp => tp.id === topicId ? { ...tp, ...t } : tp) };
-    }));
+    setSubjects(prev => {
+      const next = prev.map(s => {
+        if (s.id !== subjectId) return s;
+        const updated = { ...s, topics: s.topics.map(tp => tp.id === topicId ? { ...tp, ...t } : tp) };
+        saveTopics(subjectId, updated.topics).catch(console.error);
+        return updated;
+      });
+      return next;
+    });
   }, []);
+
   const deleteTopic = useCallback((subjectId: string, topicId: string) => {
-    setSubjects(prev => prev.map(s => {
-      if (s.id !== subjectId) return s;
-      return { ...s, topics: s.topics.filter(tp => tp.id !== topicId) };
-    }));
+    setSubjects(prev => {
+      const next = prev.map(s => {
+        if (s.id !== subjectId) return s;
+        return { ...s, topics: s.topics.filter(tp => tp.id !== topicId) };
+      });
+      return next;
+    });
+    deleteTopicDb(topicId).catch(console.error);
   }, []);
+
   const replaceTopicsFromSyllabus = useCallback((subjectId: string, newTopics: Omit<Topic, "id" | "order">[]) => {
-    setSubjects(prev => prev.map(s => {
-      if (s.id !== subjectId) return s;
-      // Keep manually-created topics (no learningObjective field), replace syllabus ones
-      const manualTopics = s.topics.filter(tp => !tp.learningObjective);
-      const syllabusTopics: Topic[] = newTopics.map((t, i) => ({
-        ...t,
-        id: nanoid(),
-        order: manualTopics.length + i + 1,
-      }));
-      return { ...s, topics: [...manualTopics, ...syllabusTopics] };
-    }));
+    setSubjects(prev => {
+      const next = prev.map(s => {
+        if (s.id !== subjectId) return s;
+        const manualTopics = s.topics.filter(tp => !tp.learningObjective);
+        const syllabusTopics: Topic[] = newTopics.map((t, i) => ({
+          ...t, id: nanoid(), order: manualTopics.length + i + 1,
+        }));
+        const allTopics = [...manualTopics, ...syllabusTopics];
+        replaceSubjectTopicsDb(subjectId, syllabusTopics).catch(console.error);
+        return { ...s, topics: allTopics };
+      });
+      return next;
+    });
   }, []);
 
   const reorderTopics = useCallback((subjectId: string, orderedIds: string[]) => {
-    setSubjects(prev => prev.map(s => {
-      if (s.id !== subjectId) return s;
-      const reordered = orderedIds.map((id, idx) => {
-        const tp = s.topics.find(t => t.id === id)!;
-        return { ...tp, order: idx + 1 };
+    setSubjects(prev => {
+      const next = prev.map(s => {
+        if (s.id !== subjectId) return s;
+        const reordered = orderedIds.map((id, idx) => {
+          const tp = s.topics.find(t => t.id === id)!;
+          return { ...tp, order: idx + 1 };
+        });
+        saveTopics(subjectId, reordered).catch(console.error);
+        return { ...s, topics: reordered };
       });
-      return { ...s, topics: reordered };
-    }));
+      return next;
+    });
   }, []);
 
   // ── School year CRUD ──────────────────────────────────────────────────────
 
   const addSchoolYear = useCallback((label: string) => {
-    setSchoolYears(prev => [...prev, { id: nanoid(), label, subjects: [] }]);
+    const ny: SchoolYear = { id: nanoid(), label, subjects: [] };
+    setSchoolYears(prev => [...prev, ny]);
+    saveSchoolYear(ny).catch(console.error);
   }, []);
+
   const deleteSchoolYear = useCallback((yearId: string) => {
     setSchoolYears(prev => prev.filter(y => y.id !== yearId));
+    deleteSchoolYearDb(yearId).catch(console.error);
   }, []);
 
   // ── Year-subject linking ──────────────────────────────────────────────────
@@ -579,6 +667,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const addSubjectToYear = useCallback((yearId: string, subjectId: string) => {
     mutateYear(yearId, y => {
       if (y.subjects.some(ys => ys.subjectId === subjectId)) return y;
+      ensureYearSubject(yearId, subjectId).catch(console.error);
       return { ...y, subjects: [...y.subjects, { subjectId, classes: [] }] };
     });
   }, [mutateYear]);
@@ -588,6 +677,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       ...y,
       subjects: y.subjects.filter(ys => ys.subjectId !== subjectId),
     }));
+    removeYearSubjectDb(yearId, subjectId).catch(console.error);
   }, [mutateYear]);
 
   // ── Class CRUD ────────────────────────────────────────────────────────────
@@ -596,17 +686,28 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     yearId: string, subjectId: string,
     cls: Omit<Class, "id" | "students" | "assessments">
   ) => {
+    const nc: Class = { ...cls, id: nanoid(), students: [], assessments: [] };
     mutateYS(yearId, subjectId, ys => ({
       ...ys,
-      classes: [...ys.classes, { ...cls, id: nanoid(), students: [], assessments: [] }],
+      classes: [...ys.classes, nc],
     }));
+    // Get year_subject id and save class
+    ensureYearSubject(yearId, subjectId).then(ysId => {
+      if (ysId !== null) saveClass(nc, ysId).catch(console.error);
+    }).catch(console.error);
   }, [mutateYS]);
 
   const updateClass = useCallback((
     yearId: string, subjectId: string, classId: string,
     cls: Partial<Omit<Class, "students" | "assessments">>
   ) => {
-    mutateClass(yearId, subjectId, classId, c => ({ ...c, ...cls }));
+    mutateClass(yearId, subjectId, classId, c => {
+      const updated = { ...c, ...cls };
+      ensureYearSubject(yearId, subjectId).then(ysId => {
+        if (ysId !== null) saveClass(updated, ysId).catch(console.error);
+      }).catch(console.error);
+      return updated;
+    });
   }, [mutateClass]);
 
   const deleteClass = useCallback((yearId: string, subjectId: string, classId: string) => {
@@ -614,6 +715,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       ...ys,
       classes: ys.classes.filter(c => c.id !== classId),
     }));
+    deleteClassDb(classId).catch(console.error);
   }, [mutateYS]);
 
   // ── Student CRUD ──────────────────────────────────────────────────────────
@@ -622,20 +724,24 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     yearId: string, subjectId: string, classId: string,
     s: Omit<Student, "id">
   ) => {
+    const ns: Student = { ...s, id: nanoid() };
     mutateClass(yearId, subjectId, classId, c => ({
       ...c,
-      students: [...c.students, { ...s, id: nanoid() }],
+      students: [...c.students, ns],
     }));
+    saveStudent(ns, classId).catch(console.error);
   }, [mutateClass]);
 
   const updateStudent = useCallback((
     yearId: string, subjectId: string, classId: string,
     studentId: string, s: Partial<Student>
   ) => {
-    mutateClass(yearId, subjectId, classId, c => ({
-      ...c,
-      students: c.students.map(st => st.id === studentId ? { ...st, ...s } : st),
-    }));
+    mutateClass(yearId, subjectId, classId, c => {
+      const updated = c.students.map(st => st.id === studentId ? { ...st, ...s } : st);
+      const updatedStudent = updated.find(st => st.id === studentId);
+      if (updatedStudent) saveStudent(updatedStudent, classId).catch(console.error);
+      return { ...c, students: updated };
+    });
   }, [mutateClass]);
 
   const deleteStudent = useCallback((
@@ -645,16 +751,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       ...c,
       students: c.students.filter(st => st.id !== studentId),
     }));
+    deleteStudentDb(studentId).catch(console.error);
   }, [mutateClass]);
 
   const importStudents = useCallback((
     yearId: string, subjectId: string, classId: string,
     students: Omit<Student, "id">[]
   ) => {
+    const newStudents: Student[] = students.map(s => ({ ...s, id: nanoid() }));
     mutateClass(yearId, subjectId, classId, c => ({
       ...c,
-      students: students.map(s => ({ ...s, id: nanoid() })),
+      students: newStudents,
     }));
+    replaceClassStudents(classId, newStudents).catch(console.error);
   }, [mutateClass]);
 
   // ── Assessment CRUD ───────────────────────────────────────────────────────
@@ -668,6 +777,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       ...c,
       assessments: [...c.assessments, na],
     }));
+    saveAssessment(na, classId).catch(console.error);
     return na;
   }, [mutateClass]);
 
@@ -675,7 +785,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     yearId: string, subjectId: string, classId: string, assessmentId: string,
     a: Partial<Omit<Assessment, "markSheet" | "scores">>
   ) => {
-    mutateAssessment(yearId, subjectId, classId, assessmentId, x => ({ ...x, ...a }));
+    mutateAssessment(yearId, subjectId, classId, assessmentId, x => {
+      const updated = { ...x, ...a };
+      saveAssessment(updated, classId).catch(console.error);
+      return updated;
+    });
   }, [mutateAssessment]);
 
   const deleteAssessment = useCallback((
@@ -685,6 +799,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       ...c,
       assessments: c.assessments.filter(a => a.id !== assessmentId),
     }));
+    deleteAssessmentDb(assessmentId).catch(console.error);
   }, [mutateClass]);
 
   // ── Mark sheet ────────────────────────────────────────────────────────────
@@ -694,6 +809,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     items: MarkItem[]
   ) => {
     mutateAssessment(yearId, subjectId, classId, assessmentId, a => ({ ...a, markSheet: items }));
+    saveMarkSheet(assessmentId, items).catch(console.error);
   }, [mutateAssessment]);
 
   // ── Scores ────────────────────────────────────────────────────────────────
@@ -709,6 +825,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         { ...entry, submittedAt: new Date().toISOString() },
       ],
     }));
+    upsertScoreDb(assessmentId, entry).catch(console.error);
   }, [mutateAssessment]);
 
   const deleteScore = useCallback((
@@ -719,6 +836,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       ...a,
       scores: a.scores.filter(s => s.studentId !== studentId),
     }));
+    deleteScoreDb(assessmentId, studentId).catch(console.error);
   }, [mutateAssessment]);
 
   // ── Getters ───────────────────────────────────────────────────────────────
@@ -742,7 +860,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const getGlobalSubject = useCallback((subjectId: string) =>
     subjects.find(s => s.id === subjectId), [subjects]);
 
-  // Legacy compat: getSubject returns global subject if it exists in that year
   const getSubject = useCallback((yearId: string, subjectId: string) => {
     const ys = getYearSubject(yearId, subjectId);
     if (!ys) return undefined;
@@ -758,6 +875,36 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const getWeightingScheme = useCallback((form: string, subjectId: string) =>
     weightingSchemes.find(w => w.form === form && w.subjectId === subjectId),
   [weightingSchemes]);
+
+  // ── Backup / Restore ──────────────────────────────────────────────────────
+
+  const exportData = useCallback((): PersistedData => ({
+    teachers, natures, weightingSchemes, subjects, schoolYears, syllabusItems,
+  }), [teachers, natures, weightingSchemes, subjects, schoolYears, syllabusItems]);
+
+  const importData = useCallback(async (data: PersistedData) => {
+    if (data.teachers?.length)        setTeachers(data.teachers);
+    if (data.natures?.length)         setNatures(data.natures);
+    if (data.weightingSchemes?.length) setWeightingSchemes(data.weightingSchemes);
+    if (data.subjects?.length)        setSubjects(data.subjects);
+    if (data.schoolYears?.length)     setSchoolYears(data.schoolYears);
+    if (data.syllabusItems?.length)   setSyllabusItemsState(data.syllabusItems);
+    // Push to Supabase
+    setSyncStatus('saving');
+    try {
+      await saveFullState({
+        teachers: data.teachers ?? teachers,
+        natures: data.natures ?? natures,
+        weightingSchemes: data.weightingSchemes ?? weightingSchemes,
+        subjects: data.subjects ?? subjects,
+        schoolYears: data.schoolYears ?? schoolYears,
+        syllabusItems: data.syllabusItems ?? syllabusItems,
+      });
+      setSyncStatus('idle');
+    } catch {
+      setSyncStatus('error');
+    }
+  }, [teachers, natures, weightingSchemes, subjects, schoolYears, syllabusItems]);
 
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -780,6 +927,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       getGlobalSubject, getTeacher, getNature, getWeightingScheme,
       getSubject,
       syllabusItems, setSyllabusItems,
+      exportData, importData,
+      syncStatus,
     }}>
       {children}
     </DataContext.Provider>

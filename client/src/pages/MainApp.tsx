@@ -1051,7 +1051,7 @@ function MarkSheetEditor({
                         <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="none">—</SelectItem>
-                          {topics.map(tp => <SelectItem key={tp.id} value={tp.id}>{tp.code ? `${tp.code} ` : ""}{lang === "zh" && tp.nameCht ? tp.nameCht : tp.name}</SelectItem>)}
+                          {topics.map(tp => <SelectItem key={tp.id} value={tp.id}>{lang === "zh" && tp.nameCht ? tp.nameCht : tp.name}</SelectItem>)}
                         </SelectContent>
                       </Select>
                     );
@@ -1505,7 +1505,28 @@ function ChartTab({ yearId, subjectId, classId }: { yearId: string; subjectId: s
     return {
       id: topic.id,
       name: lang === "zh" && topic.nameCht ? topic.nameCht : topic.name,
-      code: topic.code,
+      learningUnit: topic.learningUnit || (lang === "zh" ? "未分類單元" : "Unassigned Unit"),
+      earned: totalEarned,
+      max: totalMax,
+      pct,
+      status: pct === null ? "none" : pct >= 70 ? "strong" : pct >= 50 ? "average" : "weak",
+    };
+  });
+
+  const actualTopicData = topicData.filter(topic => topic.pct !== null);
+
+  const learningUnitData = Array.from(
+    actualTopicData.reduce((map, topic) => {
+      const current = map.get(topic.learningUnit) ?? { name: topic.learningUnit, earned: 0, max: 0 };
+      current.earned += topic.earned;
+      current.max += topic.max;
+      map.set(topic.learningUnit, current);
+      return map;
+    }, new Map<string, { name: string; earned: number; max: number }>()).values()
+  ).map(unit => {
+    const pct = unit.max > 0 ? Math.round((unit.earned / unit.max) * 100) : null;
+    return {
+      ...unit,
       pct,
       status: pct === null ? "none" : pct >= 70 ? "strong" : pct >= 50 ? "average" : "weak",
     };
@@ -1521,10 +1542,29 @@ function ChartTab({ yearId, subjectId, classId }: { yearId: string; subjectId: s
         <div className="bg-white rounded-xl border border-slate-200 p-8 text-center text-slate-400 text-sm">{t("noTopicsYet")}</div>
       ) : (
         <>
+          {learningUnitData.length > 0 && (
+            <div className="bg-white rounded-xl border border-slate-200 p-4">
+              <h3 className="text-sm font-bold text-slate-700 mb-3">{lang === "zh" ? "學習單元表現" : "Learning Unit Performance"} — {lang === "zh" ? "班級平均 (%)" : "Class Average (%)"}</h3>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={learningUnitData} margin={{ top: 5, right: 10, left: 0, bottom: 60 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                  <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-35} textAnchor="end" interval={0} />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} />
+                  <Tooltip formatter={(v: unknown) => [(typeof v === "number" ? `${v}%` : "No data"), lang === "zh" ? "學習單元平均" : "Learning Unit Average"]} />
+                  <ReferenceLine y={70} stroke="#22c55e" strokeDasharray="4 4" label={{ value: "70%", fontSize: 9, fill: "#22c55e" }} />
+                  <ReferenceLine y={50} stroke="#f59e0b" strokeDasharray="4 4" label={{ value: "50%", fontSize: 9, fill: "#f59e0b" }} />
+                  <Bar dataKey="pct" radius={[4, 4, 0, 0]}>
+                    {learningUnitData.map((entry, i) => <Cell key={i} fill={colorForStatus(entry.status)} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
           <div className="bg-white rounded-xl border border-slate-200 p-4">
             <h3 className="text-sm font-bold text-slate-700 mb-3">{t("topicPerformance")} — {lang === "zh" ? "班級平均 (%)" : "Class Average (%)"}</h3>
             <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={topicData} margin={{ top: 5, right: 10, left: 0, bottom: 60 }}>
+              <BarChart data={actualTopicData} margin={{ top: 5, right: 10, left: 0, bottom: 60 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-35} textAnchor="end" interval={0} />
                 <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} />
@@ -1532,17 +1572,17 @@ function ChartTab({ yearId, subjectId, classId }: { yearId: string; subjectId: s
                 <ReferenceLine y={70} stroke="#22c55e" strokeDasharray="4 4" label={{ value: "70%", fontSize: 9, fill: "#22c55e" }} />
                 <ReferenceLine y={50} stroke="#f59e0b" strokeDasharray="4 4" label={{ value: "50%", fontSize: 9, fill: "#f59e0b" }} />
                 <Bar dataKey="pct" radius={[4, 4, 0, 0]}>
-                  {topicData.map((entry, i) => <Cell key={i} fill={colorForStatus(entry.status)} />)}
+                  {actualTopicData.map((entry, i) => <Cell key={i} fill={colorForStatus(entry.status)} />)}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
 
-          {topicData.filter(d => d.pct !== null).length >= 3 && (
+          {actualTopicData.length >= 3 && (
             <div className="bg-white rounded-xl border border-slate-200 p-4">
               <h3 className="text-sm font-bold text-slate-700 mb-3">{lang === "zh" ? "課題雷達圖" : "Topic Radar Chart"}</h3>
               <ResponsiveContainer width="100%" height={280}>
-                <RadarChart data={topicData.filter(d => d.pct !== null)}>
+                <RadarChart data={actualTopicData}>
                   <PolarGrid stroke="#e2e8f0" />
                   <PolarAngleAxis dataKey="name" tick={{ fontSize: 10 }} />
                   <PolarRadiusAxis domain={[0, 100]} tick={{ fontSize: 8 }} />
@@ -1553,14 +1593,16 @@ function ChartTab({ yearId, subjectId, classId }: { yearId: string; subjectId: s
           )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {topicData.map(topic => (
+            {actualTopicData.map(topic => (
               <div key={topic.id} className={cn("bg-white rounded-xl border-2 p-4", topic.status === "strong" ? "border-green-200" : topic.status === "average" ? "border-amber-200" : topic.status === "weak" ? "border-red-200" : "border-slate-200")}>
                 <div className="flex items-start justify-between gap-2">
-                  <div>{topic.code && <p className="text-xs font-mono text-slate-400">{topic.code}</p>}<p className="text-sm font-bold text-slate-800 mt-0.5">{topic.name}</p></div>
+                  <div>
+                    <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">{topic.learningUnit}</p>
+                    <p className="text-sm font-bold text-slate-800 mt-1">{topic.name}</p>
+                  </div>
                   <div className="text-right shrink-0">
-                    {topic.pct !== null ? (
-                      <><p className={cn("text-2xl font-bold font-mono", topic.status === "strong" ? "text-green-600" : topic.status === "average" ? "text-amber-600" : "text-red-600")}>{topic.pct}%</p><p className={cn("text-xs font-semibold", topic.status === "strong" ? "text-green-500" : topic.status === "average" ? "text-amber-500" : "text-red-500")}>{topic.status === "strong" ? t("strong") : topic.status === "average" ? t("average") : t("weak")}</p></>
-                    ) : <p className="text-xs text-slate-400">{t("notSet")}</p>}
+                    <p className={cn("text-2xl font-bold font-mono", topic.status === "strong" ? "text-green-600" : topic.status === "average" ? "text-amber-600" : "text-red-600")}>{topic.pct}%</p>
+                    <p className={cn("text-xs font-semibold", topic.status === "strong" ? "text-green-500" : topic.status === "average" ? "text-amber-500" : "text-red-500")}>{topic.status === "strong" ? t("strong") : topic.status === "average" ? t("average") : t("weak")}</p>
                   </div>
                 </div>
               </div>
@@ -1746,7 +1788,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                       <tbody>
                         {topicAnalysis.map(tp => (
                           <tr key={tp.id} className="border-b border-slate-100 last:border-0">
-                            <td className="px-3 py-1.5"><div>{tp.code && <span className="text-xs font-mono text-slate-400 mr-1">{tp.code}</span>}<span className="text-xs font-semibold text-slate-800">{tp.name}</span></div></td>
+                            <td className="px-3 py-1.5"><div><span className="text-xs font-semibold text-slate-800">{tp.name}</span></div></td>
                             <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{tp.max > 0 ? `${tp.earned}/${tp.max}` : "—"}</td>
                             <td className="px-2 py-1.5 text-center">{tp.pct !== null ? <span className={cn("font-mono font-bold text-xs", tp.status === "strong" ? "text-green-600" : tp.status === "average" ? "text-amber-600" : "text-red-600")}>{tp.pct}%</span> : <span className="text-slate-300 text-xs">—</span>}</td>
                             <td className="px-2 py-1.5 text-center">{tp.pct !== null ? <span className={cn("text-xs font-semibold px-1.5 py-0.5 rounded-full", tp.status === "strong" ? "bg-green-100 text-green-700" : tp.status === "average" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700")}>{tp.status === "strong" ? t("strong") : tp.status === "average" ? t("average") : t("weak")}</span> : <span className="text-slate-300 text-xs">—</span>}</td>
@@ -1778,6 +1820,7 @@ function SettingsTab() {
   const [syllabusFilter, setSyllabusFilter] = useState<"all" | "Junior" | "Senior">("all");
   const [syllabusSubjectId, setSyllabusSubjectId] = useState<string>("");
   const [syllabusSearch, setSyllabusSearch] = useState("");
+  const [syllabusLearningUnitFilter, setSyllabusLearningUnitFilter] = useState("all");
 
   const handleSyllabusFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1816,7 +1859,7 @@ function SettingsTab() {
     // Also populate the selected subject's topics from syllabus
     if (syllabusSubjectId) {
       const topicsFromSyllabus = syllabusPreview.map((s, i) => ({
-        code: `SYL-${String(i + 1).padStart(3, "0")}`,
+        code: "",
         name: s.learningObjective,
         nameCht: "",
         order: i + 1,
@@ -1841,8 +1884,11 @@ function SettingsTab() {
     toast.success(lang === "zh" ? "課程大綱已清除" : "Syllabus cleared");
   };
 
-  const displayedSyllabus = (syllabusPreview.length > 0 ? syllabusPreview : syllabusItems)
+  const syllabusSource = syllabusPreview.length > 0 ? syllabusPreview : syllabusItems;
+  const availableLearningUnits = Array.from(new Set(syllabusSource.map(s => s.learningUnit).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  const displayedSyllabus = syllabusSource
     .filter(s => syllabusFilter === "all" || s.level === syllabusFilter)
+    .filter(s => syllabusLearningUnitFilter === "all" || s.learningUnit === syllabusLearningUnitFilter)
     .filter(s => !syllabusSearch || s.learningObjective.toLowerCase().includes(syllabusSearch.toLowerCase()) || s.strand.toLowerCase().includes(syllabusSearch.toLowerCase()) || s.learningUnit.toLowerCase().includes(syllabusSearch.toLowerCase()));
 
   // Teacher state
@@ -2091,6 +2137,13 @@ function SettingsTab() {
                     </button>
                   ))}
                 </div>
+                <Select value={syllabusLearningUnitFilter} onValueChange={setSyllabusLearningUnitFilter}>
+                  <SelectTrigger className="h-7 text-xs w-44 bg-white"><SelectValue placeholder={lang === "zh" ? "學習單元" : "Learning Unit"} /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{lang === "zh" ? "全部單元" : "All Units"}</SelectItem>
+                    {availableLearningUnits.map(unit => <SelectItem key={unit} value={unit}>{unit}</SelectItem>)}
+                  </SelectContent>
+                </Select>
                 <Input value={syllabusSearch} onChange={e => setSyllabusSearch(e.target.value)} placeholder={lang === "zh" ? "搜尋學習目標…" : "Search objectives…"} className="h-7 text-xs w-48 flex-1 max-w-xs" />
                 <span className="text-xs text-slate-400">{displayedSyllabus.length} {lang === "zh" ? "項" : "items"}</span>
               </div>
@@ -2199,7 +2252,7 @@ function SettingsTab() {
                   if (!bulkSubjectId) return;
                   const selected = syllabusItems.filter(si => selectedTopicIds.has(si.id));
                   const topicsFromSelected = selected.map((s, i) => ({
-                    code: `SYL-${String(i + 1).padStart(3, "0")}`,
+                    code: "",
                     name: s.learningObjective,
                     nameCht: "",
                     order: i + 1,
@@ -2229,6 +2282,13 @@ function SettingsTab() {
                     </button>
                   ))}
                 </div>
+                <Select value={syllabusLearningUnitFilter} onValueChange={setSyllabusLearningUnitFilter}>
+                  <SelectTrigger className="h-7 text-xs w-44 bg-white"><SelectValue placeholder={lang === "zh" ? "學習單元" : "Learning Unit"} /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{lang === "zh" ? "全部單元" : "All Units"}</SelectItem>
+                    {availableLearningUnits.map(unit => <SelectItem key={unit} value={unit}>{unit}</SelectItem>)}
+                  </SelectContent>
+                </Select>
                 <Input value={syllabusSearch} onChange={e => setSyllabusSearch(e.target.value)} placeholder={lang === "zh" ? "搜尋學習目標…" : "Search objectives…"} className="h-7 text-xs w-48 flex-1 max-w-xs" />
                 <span className="text-xs text-slate-400">{displayedSyllabus.length} {lang === "zh" ? "項" : "items"}</span>
               </div>
@@ -2317,7 +2377,6 @@ function SettingsTab() {
                     <div key={tp.id} className="flex items-center gap-3 px-4 py-2.5">
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
-                          {tp.code && <span className="text-xs font-mono text-slate-400">{tp.code}</span>}
                           <p className="font-semibold text-slate-800 text-sm">{lang === "zh" && tp.nameCht ? tp.nameCht : tp.name}</p>
                         </div>
                       </div>
