@@ -6,7 +6,8 @@
  * - Tab content renders inline (no routing)
  * - 8 tabs matching reference site structure
  */
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
+import * as XLSX from "xlsx";
 import {
   Users, ClipboardList, BarChart3, Table2, PieChart, User, Settings2, Database,
   GraduationCap, Languages, Save, ChevronDown, ChevronRight, Plus, Trash2,
@@ -310,7 +311,7 @@ function StudentMgmtTab({
               <Button size="sm" onClick={() => setShowAddStudent(true)} className="gap-1 h-7 text-xs"><Plus className="w-3.5 h-3.5" />{t("addStudent")}</Button>
             </div>
           </div>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto overflow-y-auto max-h-[60vh]">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50/50">
@@ -1673,10 +1674,63 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
 // ─── Tab: Settings ────────────────────────────────────────────────────────────
 function SettingsTab() {
-  const { teachers, addTeacher, updateTeacher, deleteTeacher, natures, addNature, updateNature, deleteNature, weightingSchemes, addWeightingScheme, updateWeightingScheme, deleteWeightingScheme, subjects, addTopic, updateTopic, deleteTopic } = useData();
+  const { teachers, addTeacher, updateTeacher, deleteTeacher, natures, addNature, updateNature, deleteNature, weightingSchemes, addWeightingScheme, updateWeightingScheme, deleteWeightingScheme, subjects, addTopic, updateTopic, deleteTopic, syllabusItems, setSyllabusItems } = useData();
   const { t, lang, setLang } = useI18n();
 
-  const [activeSection, setActiveSection] = useState<"teachers" | "natures" | "weighting" | "topics">("teachers");
+  const [activeSection, setActiveSection] = useState<"teachers" | "natures" | "weighting" | "topics" | "syllabus">("teachers");
+
+  // Syllabus state
+  const syllabusFileRef = useRef<HTMLInputElement>(null);
+  const [syllabusPreview, setSyllabusPreview] = useState<import("@/contexts/DataContext").SyllabusItem[]>([]);
+  const [syllabusFilter, setSyllabusFilter] = useState<"all" | "Junior" | "Senior">("all");
+  const [syllabusSearch, setSyllabusSearch] = useState("");
+
+  const handleSyllabusFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const data = new Uint8Array(ev.target?.result as ArrayBuffer);
+        const wb = XLSX.read(data, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json<Record<string, string>>(ws, { defval: "" });
+        const items = rows.filter(r => r["Learning Objective"] || r["LearningObjective"]).map((r, i) => ({
+          id: `syl-${Date.now()}-${i}`,
+          level: r["Level"] || r["Syllabus Level"] || "",
+          strand: r["Strand"] || "",
+          learningUnit: r["Learning Unit"] || r["LearningUnit"] || "",
+          learningObjective: r["Learning Objective"] || r["LearningObjective"] || "",
+          category: r["Category"] || "",
+          remarks: r["Remarks"] || "",
+        }));
+        setSyllabusPreview(items);
+        toast.success(lang === "zh" ? `已解析 ${items.length} 個學習目標` : `Parsed ${items.length} learning objectives`);
+      } catch {
+        toast.error(lang === "zh" ? "無法解析 Excel 檔案" : "Failed to parse Excel file");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    // Reset file input so same file can be re-uploaded
+    e.target.value = "";
+  };
+
+  const handleSaveSyllabus = () => {
+    if (syllabusPreview.length === 0) return;
+    setSyllabusItems(syllabusPreview);
+    setSyllabusPreview([]);
+    toast.success(lang === "zh" ? "課程大綱已儲存" : "Syllabus saved successfully");
+  };
+
+  const handleClearSyllabus = () => {
+    setSyllabusItems([]);
+    setSyllabusPreview([]);
+    toast.success(lang === "zh" ? "課程大綱已清除" : "Syllabus cleared");
+  };
+
+  const displayedSyllabus = (syllabusPreview.length > 0 ? syllabusPreview : syllabusItems)
+    .filter(s => syllabusFilter === "all" || s.level === syllabusFilter)
+    .filter(s => !syllabusSearch || s.learningObjective.toLowerCase().includes(syllabusSearch.toLowerCase()) || s.strand.toLowerCase().includes(syllabusSearch.toLowerCase()) || s.learningUnit.toLowerCase().includes(syllabusSearch.toLowerCase()));
 
   // Teacher state
   const [showAddTeacher, setShowAddTeacher] = useState(false);
@@ -1750,6 +1804,7 @@ function SettingsTab() {
     { id: "natures" as const, label: lang === "zh" ? "評估性質" : "Assessment Natures" },
     { id: "weighting" as const, label: lang === "zh" ? "加權方案" : "Weighting Schemes" },
     { id: "topics" as const, label: lang === "zh" ? "課題管理" : "Topic Management" },
+    { id: "syllabus" as const, label: lang === "zh" ? "課程大綱" : "Syllabus" },
   ];
 
   return (
@@ -1858,6 +1913,98 @@ function SettingsTab() {
               ))}
               {weightingSchemes.length === 0 && <p className="px-4 py-4 text-sm text-slate-400 italic">{t("noData")}</p>}
             </div>
+          </div>
+        )}
+
+        {activeSection === "syllabus" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">{lang === "zh" ? "課程大綱" : "Syllabus"}</h3>
+                <p className="text-xs text-slate-500 mt-0.5">{lang === "zh" ? `已載入 ${syllabusItems.length} 個學習目標` : `${syllabusItems.length} learning objectives loaded`}</p>
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                <Button size="sm" variant="outline" onClick={() => syllabusFileRef.current?.click()} className="gap-1.5"><Upload className="w-4 h-4" />{lang === "zh" ? "上傳 Excel" : "Upload Excel"}</Button>
+                <input ref={syllabusFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleSyllabusFile} />
+                {syllabusPreview.length > 0 && (
+                  <Button size="sm" onClick={handleSaveSyllabus} className="gap-1.5"><Save className="w-4 h-4" />{lang === "zh" ? `確認儲存 (${syllabusPreview.length})` : `Confirm Save (${syllabusPreview.length})`}</Button>
+                )}
+                {syllabusItems.length > 0 && syllabusPreview.length === 0 && (
+                  <Button size="sm" variant="outline" onClick={handleClearSyllabus} className="gap-1.5 text-red-600 hover:bg-red-50"><Trash2 className="w-4 h-4" />{lang === "zh" ? "清除大綱" : "Clear Syllabus"}</Button>
+                )}
+              </div>
+            </div>
+
+            {/* Excel format hint */}
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-700">
+              <p className="font-semibold mb-1">{lang === "zh" ? "Excel 格式要求" : "Excel Format Requirements"}</p>
+              <p>{lang === "zh" ? "必須包含以下欄位標題（第一行）：" : "Required column headers (row 1):"}</p>
+              <p className="font-mono mt-1">Level | Strand | Learning Unit | Learning Objective | Category | Remarks</p>
+              <p className="mt-1 text-blue-600">{lang === "zh" ? "Level 欄填寫 \"Junior\" 或 \"Senior\"" : 'Level column: fill with "Junior" or "Senior"'}</p>
+            </div>
+
+            {/* Filter + search */}
+            {(syllabusItems.length > 0 || syllabusPreview.length > 0) && (
+              <div className="flex flex-wrap gap-2 items-center">
+                <div className="flex gap-1">
+                  {(["all", "Junior", "Senior"] as const).map(f => (
+                    <button key={f} onClick={() => setSyllabusFilter(f)} className={cn("px-3 py-1 rounded-full text-xs font-semibold transition-colors", syllabusFilter === f ? "bg-blue-500 text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50")}>
+                      {f === "all" ? (lang === "zh" ? "全部" : "All") : f}
+                    </button>
+                  ))}
+                </div>
+                <Input value={syllabusSearch} onChange={e => setSyllabusSearch(e.target.value)} placeholder={lang === "zh" ? "搜尋學習目標…" : "Search objectives…"} className="h-7 text-xs w-48 flex-1 max-w-xs" />
+                <span className="text-xs text-slate-400">{displayedSyllabus.length} {lang === "zh" ? "項" : "items"}</span>
+              </div>
+            )}
+
+            {/* Preview/table */}
+            {syllabusPreview.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-2 text-xs text-amber-700 font-medium">
+                ⚠ {lang === "zh" ? `預覽模式：${syllabusPreview.length} 個項目待確認儲存` : `Preview mode: ${syllabusPreview.length} items pending save`}
+              </div>
+            )}
+
+            {displayedSyllabus.length > 0 ? (
+              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                <div className="overflow-x-auto overflow-y-auto max-h-[55vh]">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-slate-50 z-10">
+                      <tr className="border-b border-slate-200">
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500 whitespace-nowrap w-20">{lang === "zh" ? "程度" : "Level"}</th>
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500 whitespace-nowrap w-36">{lang === "zh" ? "範疇" : "Strand"}</th>
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500 whitespace-nowrap w-36">{lang === "zh" ? "學習單元" : "Learning Unit"}</th>
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500">{lang === "zh" ? "學習目標" : "Learning Objective"}</th>
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500 whitespace-nowrap w-28">{lang === "zh" ? "類別" : "Category"}</th>
+                        <th className="px-3 py-2 text-left font-bold uppercase tracking-wider text-slate-500">{lang === "zh" ? "備注" : "Remarks"}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {displayedSyllabus.map((item, i) => (
+                        <tr key={item.id} className={cn("border-b border-slate-100 last:border-0", i % 2 === 0 ? "bg-white" : "bg-slate-50/50")}>
+                          <td className="px-3 py-2">
+                            <span className={cn("px-1.5 py-0.5 rounded text-xs font-semibold", item.level === "Junior" ? "bg-green-100 text-green-700" : item.level === "Senior" ? "bg-purple-100 text-purple-700" : "bg-slate-100 text-slate-600")}>{item.level || "—"}</span>
+                          </td>
+                          <td className="px-3 py-2 text-slate-600 font-medium">{item.strand}</td>
+                          <td className="px-3 py-2 text-slate-600">{item.learningUnit}</td>
+                          <td className="px-3 py-2 text-slate-800">{item.learningObjective}</td>
+                          <td className="px-3 py-2">
+                            <span className={cn("px-1.5 py-0.5 rounded text-xs", item.category === "Foundation" ? "bg-blue-100 text-blue-700" : item.category === "Non-Foundation" ? "bg-orange-100 text-orange-700" : "bg-slate-100 text-slate-600")}>{item.category || "—"}</span>
+                          </td>
+                          <td className="px-3 py-2 text-slate-500 max-w-xs">{item.remarks || <span className="text-slate-300">—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+                <BookOpen className="w-10 h-10 mx-auto mb-3 text-slate-300" />
+                <p className="text-slate-500 font-medium">{lang === "zh" ? "尚未載入課程大綱" : "No syllabus loaded yet"}</p>
+                <p className="text-xs text-slate-400 mt-1">{lang === "zh" ? "點擊「上傳 Excel」按鈕匯入課程大綱" : 'Click "Upload Excel" to import your syllabus'}</p>
+              </div>
+            )}
           </div>
         )}
 

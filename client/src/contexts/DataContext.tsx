@@ -25,6 +25,7 @@ interface PersistedData {
   weightingSchemes: WeightingScheme[];
   subjects: Subject[];
   schoolYears: SchoolYear[];
+  syllabusItems?: SyllabusItem[];
 }
 
 function loadFromLocalStorage(): PersistedData | null {
@@ -46,6 +47,16 @@ function saveToLocalStorage(data: PersistedData) {
 }
 
 // ─── Core types ───────────────────────────────────────────────────────────────
+
+export interface SyllabusItem {
+  id: string;
+  level: "Junior" | "Senior" | string;  // Junior (S1-S3) or Senior (S4-S6)
+  strand: string;          // e.g. "Number and Algebra"
+  learningUnit: string;    // e.g. "1. Basic computation"
+  learningObjective: string; // e.g. "1.1 recognise the tests of divisibility..."
+  category: string;        // e.g. "Foundation" | "Non-Foundation"
+  remarks: string;         // optional notes
+}
 
 export interface Teacher {
   id: string;
@@ -228,6 +239,10 @@ interface DataContextType {
   getTeacher: (teacherId: string) => Teacher | undefined;
   getNature: (natureId: string) => AssessmentNature | undefined;
   getWeightingScheme: (form: string, subjectId: string) => WeightingScheme | undefined;
+  // Syllabus
+  syllabusItems: SyllabusItem[];
+  setSyllabusItems: (items: SyllabusItem[]) => void;
+
   // Legacy compat
   getSubject: (yearId: string, subjectId: string) => Subject | undefined;
 }
@@ -374,6 +389,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [weightingSchemes, setWeightingSchemes] = useState<WeightingScheme[]>(localData?.weightingSchemes ?? SEED_WEIGHTING);
   const [subjects, setSubjects] = useState<Subject[]>(localData?.subjects ?? SEED_SUBJECTS);
   const [schoolYears, setSchoolYears] = useState<SchoolYear[]>(localData?.schoolYears ?? SEED_YEARS);
+  const [syllabusItems, setSyllabusItemsState] = useState<SyllabusItem[]>(localData?.syllabusItems ?? []);
 
   // Track whether we've loaded from Supabase yet
   const hydrated = useRef(false);
@@ -390,6 +406,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       if (Array.isArray(d.weightingSchemes))                          setWeightingSchemes(d.weightingSchemes);
       if (Array.isArray(d.subjects) && d.subjects.length > 0)        setSubjects(d.subjects);
       if (Array.isArray(d.schoolYears) && d.schoolYears.length > 0)  setSchoolYears(d.schoolYears);
+      if (Array.isArray(d.syllabusItems))                              setSyllabusItemsState(d.syllabusItems);
       hydrated.current = true;
     });
   }, []);
@@ -399,7 +416,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   // Persist to both localStorage and Supabase whenever any state changes
   useEffect(() => {
-    const data: PersistedData = { teachers, natures, weightingSchemes, subjects, schoolYears };
+    const data: PersistedData = { teachers, natures, weightingSchemes, subjects, schoolYears, syllabusItems };
     // Always save to localStorage immediately (offline fallback)
     saveToLocalStorage(data);
     // Debounce Supabase saves to avoid hammering on rapid changes
@@ -407,7 +424,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     saveTimer.current = setTimeout(() => {
       saveAppState(data as unknown as Record<string, unknown>);
     }, 800);
-  }, [teachers, natures, weightingSchemes, subjects, schoolYears]);
+  }, [teachers, natures, weightingSchemes, subjects, schoolYears, syllabusItems]);
+
+  const setSyllabusItems = useCallback((items: SyllabusItem[]) => {
+    setSyllabusItemsState(items);
+  }, []);
 
   // ── Mutation helpers ──────────────────────────────────────────────────────
 
@@ -734,6 +755,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       getSchoolYear, getYearSubject, getClass, getAssessment,
       getGlobalSubject, getTeacher, getNature, getWeightingScheme,
       getSubject,
+      syllabusItems, setSyllabusItems,
     }}>
       {children}
     </DataContext.Provider>
