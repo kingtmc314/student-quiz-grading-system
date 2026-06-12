@@ -383,11 +383,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     loadAppState().then(remote => {
       if (!remote) return; // no remote data yet — keep local/seed
       const d = remote as unknown as PersistedData;
-      if (d.teachers)        setTeachers(d.teachers);
-      if (d.natures)         setNatures(d.natures);
-      if (d.weightingSchemes) setWeightingSchemes(d.weightingSchemes);
-      if (d.subjects)        setSubjects(d.subjects);
-      if (d.schoolYears)     setSchoolYears(d.schoolYears);
+      // Only apply remote data if it has meaningful content (non-empty arrays)
+      // This prevents an empty Supabase blob from wiping out local data
+      if (Array.isArray(d.teachers) && d.teachers.length > 0)        setTeachers(d.teachers);
+      if (Array.isArray(d.natures) && d.natures.length > 0)          setNatures(d.natures);
+      if (Array.isArray(d.weightingSchemes))                          setWeightingSchemes(d.weightingSchemes);
+      if (Array.isArray(d.subjects) && d.subjects.length > 0)        setSubjects(d.subjects);
+      if (Array.isArray(d.schoolYears) && d.schoolYears.length > 0)  setSchoolYears(d.schoolYears);
       hydrated.current = true;
     });
   }, []);

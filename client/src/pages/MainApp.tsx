@@ -734,7 +734,7 @@ function GradingTab({
       ) : (
         <div className="flex-1 flex flex-col md:flex-row gap-0 overflow-hidden">
           {/* ── Left: Student list ── */}
-          <div className="md:w-52 w-full md:shrink-0 border-b md:border-b-0 md:border-r border-slate-200 flex flex-col overflow-hidden bg-white md:max-h-full" style={{ maxHeight: '40%' }}>
+          <div className="md:w-64 w-full md:shrink-0 border-b md:border-b-0 md:border-r border-slate-200 flex flex-col overflow-hidden bg-white" style={{ maxHeight: 'clamp(200px, 50vh, 400px)' }}>
             <div className="px-3 py-2 border-b border-slate-200 bg-slate-50 hidden md:block">
               <p className="text-xs font-bold uppercase tracking-widest text-slate-500">{t("students")} ({sortedStudents.length})</p>
             </div>
