@@ -38,7 +38,74 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.1.0";
+const APP_VERSION = "v1.2.0";
+
+// ─── Weighted Total Calculator ───────────────────────────────────────────────
+/**
+ * Calculates a student's weighted total percentage for a class, using a weighting scheme.
+ * The scheme has caEntries (per-nature CA percentages) and examPercentage.
+ * Returns null if no scored assessments exist.
+ */
+function calcWeightedTotal(
+  studentId: string,
+  assessments: Array<{ id: string; natureId?: string; markSheet: MarkItem[]; scores: ScoreEntry[] }>,
+  getNature: (id: string) => { isExam: boolean } | undefined,
+  scheme: WeightingScheme | undefined,
+): number | null {
+  if (!scheme) {
+    // No scheme: fall back to simple average across all graded assessments
+    const graded: number[] = [];
+    assessments.forEach(a => {
+      const total = getScoreTotal(a, studentId);
+      const max = getAssessmentMax(a);
+      if (total !== null && max > 0) graded.push((total / max) * 100);
+    });
+    return graded.length > 0 ? Math.round(graded.reduce((s, v) => s + v, 0) / graded.length) : null;
+  }
+
+  // Group assessments by nature
+  const byNature = new Map<string, { earned: number; max: number }>();
+  assessments.forEach(a => {
+    const total = getScoreTotal(a, studentId);
+    const max = getAssessmentMax(a);
+    if (total === null || max === 0) return;
+    const nid = a.natureId ?? "";
+    const existing = byNature.get(nid) ?? { earned: 0, max: 0 };
+    byNature.set(nid, { earned: existing.earned + total, max: existing.max + max });
+  });
+
+  if (byNature.size === 0) return null;
+
+  let weightedSum = 0;
+  let totalWeight = 0;
+
+  // Apply CA entries
+  scheme.caEntries.forEach(entry => {
+    const group = byNature.get(entry.natureId);
+    if (!group || group.max === 0) return;
+    const pct = (group.earned / group.max) * 100;
+    weightedSum += pct * (entry.percentage / 100);
+    totalWeight += entry.percentage;
+  });
+
+  // Apply exam percentage: sum all exam natures
+  if (scheme.examPercentage > 0) {
+    let examEarned = 0, examMax = 0;
+    byNature.forEach((group, nid) => {
+      const nature = getNature(nid);
+      if (nature?.isExam) { examEarned += group.earned; examMax += group.max; }
+    });
+    if (examMax > 0) {
+      const examPct = (examEarned / examMax) * 100;
+      weightedSum += examPct * (scheme.examPercentage / 100);
+      totalWeight += scheme.examPercentage;
+    }
+  }
+
+  if (totalWeight === 0) return null;
+  // Normalise in case not all components have data
+  return Math.round(weightedSum / (totalWeight / 100));
+}
 
 // ─── Tab IDs ──────────────────────────────────────────────────────────────────
 type TabId = "students" | "grading" | "weakness" | "summary" | "chart" | "profile" | "settings" | "backup";
@@ -1210,7 +1277,7 @@ function MarkSheetEditor({
 
 // ─── Tab: Weakness Analysis ───────────────────────────────────────────────────
 function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId: string; classId: string }) {
-  const { getSchoolYear, getSubject, getClass, getGlobalSubject, getNature } = useData();
+  const { getSchoolYear, getSubject, getClass, getGlobalSubject, getNature, getWeightingScheme } = useData();
   const { t, lang } = useI18n();
 
   const year = yearId ? getSchoolYear(yearId) : undefined;
@@ -1225,6 +1292,7 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
   const topics = globalSubject?.topics ?? [];
   const assessments = cls.assessments ?? [];
   const students = cls.students ?? [];
+  const scheme = getWeightingScheme(cls.form, subjectId);
 
   const topicData = topics.map(topic => {
     let totalEarned = 0, totalMax = 0;
@@ -1257,13 +1325,15 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
     caAssessments.forEach(a => { const t = getScoreTotal(a, student.id); if (t !== null) { caTotalEarned += t; caTotalMax += getAssessmentMax(a); } });
     let examTotalEarned = 0, examTotalMax = 0;
     examAssessments.forEach(a => { const t = getScoreTotal(a, student.id); if (t !== null) { examTotalEarned += t; examTotalMax += getAssessmentMax(a); } });
+    const weightedTotal = calcWeightedTotal(student.id, assessments, getNature, scheme);
     return {
       student,
       caPct: caTotalMax > 0 ? Math.round((caTotalEarned / caTotalMax) * 100) : null,
       examPct: examTotalMax > 0 ? Math.round((examTotalEarned / examTotalMax) * 100) : null,
       caTotalEarned, caTotalMax, examTotalEarned, examTotalMax,
+      weightedTotal,
     };
-  }).sort((a, b) => ((b.caPct ?? 0) + (b.examPct ?? 0)) - ((a.caPct ?? 0) + (a.examPct ?? 0)));
+  }).sort((a, b) => ((b.weightedTotal ?? b.caPct ?? 0) + 0) - ((a.weightedTotal ?? a.caPct ?? 0) + 0));
 
   const colorForStatus = (status: string) => status === "strong" ? "#22c55e" : status === "average" ? "#f59e0b" : status === "weak" ? "#ef4444" : "#94a3b8";
 
@@ -1329,6 +1399,7 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
                     <th className="text-left px-3 py-2 text-xs font-bold text-slate-500 uppercase tracking-wide">{t("studentName")}</th>
                     <th className="text-center px-3 py-2 text-xs font-bold text-slate-500 uppercase tracking-wide">{t("caAssessments")}</th>
                     <th className="text-center px-3 py-2 text-xs font-bold text-slate-500 uppercase tracking-wide">{t("examAssessments")}</th>
+                    <th className="text-center px-3 py-2 text-xs font-bold text-blue-600 uppercase tracking-wide bg-blue-50">{lang === "zh" ? "加權總分" : "Weighted Total"}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1343,6 +1414,9 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
                         </td>
                         <td className="px-3 py-2 text-center">
                           {row.examPct !== null ? <span className={cn("font-mono font-bold", row.examPct >= 70 ? "text-green-600" : row.examPct >= 50 ? "text-amber-600" : "text-red-600")}>{row.examTotalEarned}/{row.examTotalMax} ({row.examPct}%)</span> : <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="px-3 py-2 text-center bg-blue-50/40">
+                          {row.weightedTotal !== null ? <span className={cn("font-mono font-bold text-sm", row.weightedTotal >= 70 ? "text-green-600" : row.weightedTotal >= 50 ? "text-amber-600" : "text-red-600")}>{row.weightedTotal}%</span> : <span className="text-slate-300">—</span>}
                         </td>
                       </tr>
                     );
@@ -1401,7 +1475,7 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
 
 // ─── Tab: Summary Table ───────────────────────────────────────────────────────
 function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId: string; classId: string }) {
-  const { getSchoolYear, getSubject, getClass, getNature } = useData();
+  const { getSchoolYear, getSubject, getClass, getNature, getWeightingScheme } = useData();
   const { t, lang } = useI18n();
 
   const year = yearId ? getSchoolYear(yearId) : undefined;
@@ -1416,6 +1490,9 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
   const assessments = cls.assessments ?? [];
   const sortedStudents = [...cls.students].sort((a, b) => a.classNo.localeCompare(b.classNo, undefined, { numeric: true }));
+
+  // Weighting scheme for this class's form + subject
+  const scheme = getWeightingScheme(cls.form, subjectId);
 
   // Per assessment, per student totals
   const assessData = assessments.map(a => {
@@ -1440,12 +1517,13 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
   const handleExportCSV = () => {
     const rows: string[][] = [];
-    rows.push(["#", "Name", ...assessData.map(a => `${a.code || a.title} (/${a.max})`)]);
+    rows.push(["#", "Name", ...assessData.map(a => `${a.code || a.title} (/${a.max})`), "Weighted Total (%)"]);
     sortedStudents.forEach(s => {
+      const wt = calcWeightedTotal(s.id, assessments, getNature, scheme);
       rows.push([s.classNo, lang === "zh" && s.nameCht ? s.nameCht : s.name, ...assessData.map(a => {
         const t = getStudentAssessmentTotal(s.id, a.id);
         return t !== null ? String(t) : "";
-      })]);
+      }), wt !== null ? `${wt}%` : ""]);
     });
     const csv = rows.map(r => r.join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -1481,6 +1559,10 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                     {a.isExam && <div className="text-red-500 text-[9px]">Exam</div>}
                   </th>
                 ))}
+                <th className="px-2 py-2 text-center min-w-[90px] bg-blue-50">
+                  <div className="font-bold text-blue-700 text-xs">{lang === "zh" ? "加權總分" : "Weighted Total"}</div>
+                  {scheme && <div className="text-blue-400 font-normal text-[9px]">{scheme.label}</div>}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -1504,6 +1586,16 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                         </td>
                       );
                     })}
+                    {(() => {
+                      const wt = calcWeightedTotal(student.id, assessments, getNature, scheme);
+                      return (
+                        <td className="px-2 py-2 text-center bg-blue-50/60">
+                          {wt !== null ? (
+                            <span className={cn("font-mono font-bold text-sm", wt >= 70 ? "text-green-600" : wt >= 50 ? "text-amber-600" : "text-red-600")}>{wt}%</span>
+                          ) : <span className="text-slate-300">—</span>}
+                        </td>
+                      );
+                    })()}
                   </tr>
                 );
               })}
@@ -1760,7 +1852,7 @@ function HierarchyAnalysisTable({ hierarchyData, lang, t }: {
 
 // ─── Tab: Student Profile ─────────────────────────────────────────────────────
 function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId: string; classId: string }) {
-  const { getSchoolYear, getSubject, getClass, getGlobalSubject, getNature } = useData();
+  const { getSchoolYear, getSubject, getClass, getGlobalSubject, getNature, getWeightingScheme } = useData();
   const { t, lang } = useI18n();
   const [studentId, setStudentId] = useState("");
 
@@ -1835,6 +1927,8 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const caHistory = gradedAssessments.filter(a => !a.isExam);
   const examHistory = gradedAssessments.filter(a => a.isExam);
   const avgPct = gradedAssessments.length > 0 ? Math.round(gradedAssessments.reduce((s, a) => s + (a.pct ?? 0), 0) / gradedAssessments.length) : null;
+  const scheme = cls ? getWeightingScheme(cls.form, subjectId) : undefined;
+  const weightedTotal = student ? calcWeightedTotal(student.id, assessments, getNature, scheme) : null;
 
   const trendIcon = caHistory.length >= 2
     ? (caHistory[caHistory.length - 1].pct! > caHistory[caHistory.length - 2].pct!
@@ -1883,9 +1977,11 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
           {/* Stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-white rounded-xl border border-slate-200 p-4 text-center">
-              <p className="text-xs text-slate-500 mb-1">{t("overallAvg")}</p>
-              <p className={cn("text-3xl font-bold font-mono", avgPct !== null ? (avgPct >= 70 ? "text-green-600" : avgPct >= 50 ? "text-amber-600" : "text-red-600") : "text-slate-300")}>{avgPct !== null ? `${avgPct}%` : "—"}</p>
+            <div className="bg-white rounded-xl border border-blue-200 p-4 text-center">
+              <p className="text-xs text-blue-600 font-semibold mb-0.5">{lang === "zh" ? "加權總分" : "Weighted Total"}</p>
+              {scheme && <p className="text-[9px] text-slate-400 mb-1">{scheme.label}</p>}
+              <p className={cn("text-3xl font-bold font-mono", weightedTotal !== null ? (weightedTotal >= 70 ? "text-green-600" : weightedTotal >= 50 ? "text-amber-600" : "text-red-600") : "text-slate-300")}>{weightedTotal !== null ? `${weightedTotal}%` : avgPct !== null ? `${avgPct}%` : "—"}</p>
+              {!scheme && avgPct !== null && <p className="text-[9px] text-slate-400">{lang === "zh" ? "簡單平均" : "Simple avg"}</p>}
             </div>
             <div className="bg-white rounded-xl border border-slate-200 p-4 text-center">
               <p className="text-xs text-slate-500 mb-1">{t("caAssessments")}</p>
