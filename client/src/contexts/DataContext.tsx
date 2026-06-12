@@ -99,8 +99,14 @@ export interface WeightEntry {
 
 export interface WeightingScheme {
   id: string;
+  /** @deprecated use forms[] instead; kept for backward compat */
   form: string;
+  /** @deprecated use subjectIds[] instead; kept for backward compat */
   subjectId: string;
+  /** Multiple forms this scheme applies to (e.g. ["S4", "S5"]) */
+  forms?: string[];
+  /** Multiple subject IDs this scheme applies to */
+  subjectIds?: string[];
   label: string;
   caEntries: WeightEntry[];
   examPercentage: number;
@@ -897,7 +903,12 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const getWeightingScheme = useCallback((form: string, subjectId: string, weightingSchemeId?: string) => {
     if (weightingSchemeId) return weightingSchemes.find(w => w.id === weightingSchemeId);
-    return weightingSchemes.find(w => w.form === form && w.subjectId === subjectId);
+    // Match on forms[] / subjectIds[] arrays first, fall back to legacy form/subjectId fields
+    return weightingSchemes.find(w => {
+      const formMatch = w.forms ? w.forms.includes(form) : w.form === form;
+      const subjectMatch = w.subjectIds ? (w.subjectIds.length === 0 || w.subjectIds.includes(subjectId)) : w.subjectId === subjectId;
+      return formMatch && subjectMatch;
+    });
   }, [weightingSchemes]);
 
   // ── Backup / Restore ──────────────────────────────────────────────────────

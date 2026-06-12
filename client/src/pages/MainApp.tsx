@@ -38,32 +38,16 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.3.2";
+const APP_VERSION = "v1.3.3";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
- * Calculates a student's weighted total percentage for a class, using a weighting scheme.
- * The scheme has caEntries (per-nature CA percentages) and examPercentage.
- * Returns null if no scored assessments exist.
+ * Groups assessments by natureId and returns earned/max per nature.
  */
-function calcWeightedTotal(
+function groupByNature(
   studentId: string,
   assessments: Array<{ id: string; natureId?: string; markSheet: MarkItem[]; scores: ScoreEntry[] }>,
-  getNature: (id: string) => { isExam: boolean } | undefined,
-  scheme: WeightingScheme | undefined,
-): number | null {
-  if (!scheme) {
-    // No scheme: fall back to simple average across all graded assessments
-    const graded: number[] = [];
-    assessments.forEach(a => {
-      const total = getScoreTotal(a, studentId);
-      const max = getAssessmentMax(a);
-      if (total !== null && max > 0) graded.push((total / max) * 100);
-    });
-    return graded.length > 0 ? Math.round(graded.reduce((s, v) => s + v, 0) / graded.length) : null;
-  }
-
-  // Group assessments by nature
+): Map<string, { earned: number; max: number }> {
   const byNature = new Map<string, { earned: number; max: number }>();
   assessments.forEach(a => {
     const total = getScoreTotal(a, studentId);
@@ -73,21 +57,43 @@ function calcWeightedTotal(
     const existing = byNature.get(nid) ?? { earned: 0, max: 0 };
     byNature.set(nid, { earned: existing.earned + total, max: existing.max + max });
   });
+  return byNature;
+}
 
+/**
+ * Calculates the CA weighted total (%) independently from exam.
+ * Each CA nature has its own percentage weight in scheme.caEntries.
+ * Returns null if no CA data exists.
+ */
+function calcCATotal(
+  studentId: string,
+  assessments: Array<{ id: string; natureId?: string; markSheet: MarkItem[]; scores: ScoreEntry[] }>,
+  getNature: (id: string) => { isExam: boolean } | undefined,
+  scheme: WeightingScheme | undefined,
+): number | null {
+  const byNature = groupByNature(studentId, assessments);
   if (byNature.size === 0) return null;
+
+  if (!scheme) {
+    // No scheme: simple average of CA assessments only
+    const graded: number[] = [];
+    byNature.forEach((group, nid) => {
+      const nature = getNature(nid);
+      if (!nature?.isExam && group.max > 0) graded.push((group.earned / group.max) * 100);
+    });
+    return graded.length > 0 ? Math.round(graded.reduce((s, v) => s + v, 0) / graded.length) : null;
+  }
+
+  // Use per-nature CA entries (only non-exam natures)
+  const caEntries = scheme.caEntries.filter(e => {
+    const nat = getNature(e.natureId);
+    return nat && !nat.isExam;
+  });
+  if (caEntries.length === 0) return null;
 
   let weightedSum = 0;
   let totalWeight = 0;
-
-  // Check if any exam nature has an explicit entry in caEntries (per-nature exam weights)
-  const entryNatureIds = new Set(scheme.caEntries.map(e => e.natureId));
-  const hasPerNatureExamWeights = Array.from(byNature.keys()).some(nid => {
-    const nature = getNature(nid);
-    return nature?.isExam && entryNatureIds.has(nid);
-  });
-
-  // Apply all caEntries (covers both CA natures and exam natures if per-nature weights are set)
-  scheme.caEntries.forEach(entry => {
+  caEntries.forEach(entry => {
     const group = byNature.get(entry.natureId);
     if (!group || group.max === 0) return;
     const pct = (group.earned / group.max) * 100;
@@ -95,23 +101,80 @@ function calcWeightedTotal(
     totalWeight += entry.percentage;
   });
 
-  // Apply combined examPercentage only if no per-nature exam weights exist in caEntries
-  if (!hasPerNatureExamWeights && scheme.examPercentage > 0) {
+  if (totalWeight === 0) return null;
+  return Math.round(weightedSum / (totalWeight / 100));
+}
+
+/**
+ * Calculates the Exam weighted total (%) independently from CA.
+ * Each Exam nature has its own percentage weight in scheme.caEntries (if set),
+ * or falls back to combined examPercentage.
+ * Returns null if no Exam data exists.
+ */
+function calcExamTotal(
+  studentId: string,
+  assessments: Array<{ id: string; natureId?: string; markSheet: MarkItem[]; scores: ScoreEntry[] }>,
+  getNature: (id: string) => { isExam: boolean } | undefined,
+  scheme: WeightingScheme | undefined,
+): number | null {
+  const byNature = groupByNature(studentId, assessments);
+  if (byNature.size === 0) return null;
+
+  if (!scheme) {
+    // No scheme: simple average of Exam assessments only
+    const graded: number[] = [];
+    byNature.forEach((group, nid) => {
+      const nature = getNature(nid);
+      if (nature?.isExam && group.max > 0) graded.push((group.earned / group.max) * 100);
+    });
+    return graded.length > 0 ? Math.round(graded.reduce((s, v) => s + v, 0) / graded.length) : null;
+  }
+
+  // Check if exam natures have per-nature entries in caEntries
+  const examEntries = scheme.caEntries.filter(e => {
+    const nat = getNature(e.natureId);
+    return nat && nat.isExam;
+  });
+
+  if (examEntries.length > 0) {
+    // Per-nature exam weights
+    let weightedSum = 0;
+    let totalWeight = 0;
+    examEntries.forEach(entry => {
+      const group = byNature.get(entry.natureId);
+      if (!group || group.max === 0) return;
+      const pct = (group.earned / group.max) * 100;
+      weightedSum += pct * (entry.percentage / 100);
+      totalWeight += entry.percentage;
+    });
+    if (totalWeight === 0) return null;
+    return Math.round(weightedSum / (totalWeight / 100));
+  }
+
+  // Fallback: combined examPercentage — pool all exam natures together
+  if (scheme.examPercentage > 0) {
     let examEarned = 0, examMax = 0;
     byNature.forEach((group, nid) => {
       const nature = getNature(nid);
       if (nature?.isExam) { examEarned += group.earned; examMax += group.max; }
     });
-    if (examMax > 0) {
-      const examPct = (examEarned / examMax) * 100;
-      weightedSum += examPct * (scheme.examPercentage / 100);
-      totalWeight += scheme.examPercentage;
-    }
+    if (examMax > 0) return Math.round((examEarned / examMax) * 100);
   }
 
-  if (totalWeight === 0) return null;
-  // Normalise in case not all components have data
-  return Math.round(weightedSum / (totalWeight / 100));
+  return null;
+}
+
+/** @deprecated Use calcCATotal / calcExamTotal instead. Kept for CSV export fallback. */
+function calcWeightedTotal(
+  studentId: string,
+  assessments: Array<{ id: string; natureId?: string; markSheet: MarkItem[]; scores: ScoreEntry[] }>,
+  getNature: (id: string) => { isExam: boolean } | undefined,
+  scheme: WeightingScheme | undefined,
+): { ca: number | null; exam: number | null } {
+  return {
+    ca: calcCATotal(studentId, assessments, getNature, scheme),
+    exam: calcExamTotal(studentId, assessments, getNature, scheme),
+  };
 }
 
 // ─── Tab IDs ──────────────────────────────────────────────────────────────────
@@ -1437,9 +1500,10 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
         hasCA: g.caAssess.length > 0, hasExam: g.examAssess.length > 0,
       };
     });
-    const weightedTotal = calcWeightedTotal(student.id, assessments, getNature, scheme);
-    return { student, termRows, weightedTotal };
-  }).sort((a, b) => ((b.weightedTotal ?? 0) - (a.weightedTotal ?? 0)));
+    const caTotal = calcCATotal(student.id, assessments, getNature, scheme);
+    const examTotal = calcExamTotal(student.id, assessments, getNature, scheme);
+    return { student, termRows, caTotal, examTotal };
+  }).sort((a, b) => ((b.caTotal ?? 0) - (a.caTotal ?? 0)));
 
   const colorForStatus = (status: string) => status === "strong" ? "#22c55e" : status === "average" ? "#f59e0b" : status === "weak" ? "#ef4444" : "#94a3b8";
 
@@ -1508,8 +1572,12 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
                     return <th key={g.term} colSpan={cols} className="px-3 py-1.5 text-center font-bold text-slate-700 border-l border-slate-200">{termLabel(g.term, lang)}</th>;
                   })}
                   <th className="px-3 py-1.5 text-center bg-blue-50 border-l border-slate-200" rowSpan={2}>
-                    <div className="font-bold text-blue-700">{lang === "zh" ? "加權總分" : "Weighted Total"}</div>
+                    <div className="font-bold text-blue-700">{lang === "zh" ? "CA總分" : "CA Total"}</div>
                     {scheme && <div className="text-blue-400 font-normal text-[9px]">{scheme.label}</div>}
+                  </th>
+                  <th className="px-3 py-1.5 text-center bg-red-50 border-l border-slate-200" rowSpan={2}>
+                    <div className="font-bold text-red-700">{lang === "zh" ? "大考總分" : "Exam Total"}</div>
+                    {scheme && <div className="text-red-400 font-normal text-[9px]">{scheme.label}</div>}
                   </th>
                 </tr>
                 {/* Row 2: CA / Exam sub-headers */}
@@ -1544,7 +1612,10 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
                         </React.Fragment>
                       ))}
                       <td className="px-3 py-2 text-center bg-blue-50/40 border-l border-slate-100">
-                        {row.weightedTotal !== null ? <span className={cn("font-mono font-bold text-sm", row.weightedTotal >= 70 ? "text-green-600" : row.weightedTotal >= 50 ? "text-amber-600" : "text-red-600")}>{row.weightedTotal}%</span> : <span className="text-slate-300">—</span>}
+                        {row.caTotal !== null ? <span className={cn("font-mono font-bold text-sm", row.caTotal >= 70 ? "text-green-600" : row.caTotal >= 50 ? "text-amber-600" : "text-red-600")}>{row.caTotal}%</span> : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-center bg-red-50/30 border-l border-slate-100">
+                        {row.examTotal !== null ? <span className={cn("font-mono font-bold text-sm", row.examTotal >= 70 ? "text-green-600" : row.examTotal >= 50 ? "text-amber-600" : "text-red-600")}>{row.examTotal}%</span> : <span className="text-slate-300">—</span>}
                       </td>
                     </tr>
                   );
@@ -1733,8 +1804,12 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                   );
                 })}
                 <th className="px-2 py-1.5 text-center bg-blue-50 border-l border-slate-200" rowSpan={2}>
-                  <div className="font-bold text-blue-700">{lang === "zh" ? "加權總分" : "Weighted Total"}</div>
+                  <div className="font-bold text-blue-700">{lang === "zh" ? "CA總分" : "CA Total"}</div>
                   {scheme && <div className="text-blue-400 font-normal text-[9px]">{scheme.label}</div>}
+                </th>
+                <th className="px-2 py-1.5 text-center bg-red-50 border-l border-slate-200" rowSpan={2}>
+                  <div className="font-bold text-red-700">{lang === "zh" ? "大考總分" : "Exam Total"}</div>
+                  {scheme && <div className="text-red-400 font-normal text-[9px]">{scheme.label}</div>}
                 </th>
               </tr>
               {/* Row 2: CA / Exam sub-headers then individual assessment columns */}
@@ -1795,13 +1870,21 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                       </React.Fragment>
                     ))}
                     {(() => {
-                      const wt = calcWeightedTotal(student.id, assessments, getNature, scheme);
+                      const caTotal = calcCATotal(student.id, assessments, getNature, scheme);
+                      const examTotal = calcExamTotal(student.id, assessments, getNature, scheme);
                       return (
-                        <td className="px-2 py-2 text-center bg-blue-50/60 border-l border-slate-100">
-                          {wt !== null ? (
-                            <span className={cn("font-mono font-bold text-sm", wt >= 70 ? "text-green-600" : wt >= 50 ? "text-amber-600" : "text-red-600")}>{wt}%</span>
-                          ) : <span className="text-slate-300">—</span>}
-                        </td>
+                        <>
+                          <td className="px-2 py-2 text-center bg-blue-50/60 border-l border-slate-100">
+                            {caTotal !== null ? (
+                              <span className={cn("font-mono font-bold text-sm", caTotal >= 70 ? "text-green-600" : caTotal >= 50 ? "text-amber-600" : "text-red-600")}>{caTotal}%</span>
+                            ) : <span className="text-slate-300">—</span>}
+                          </td>
+                          <td className="px-2 py-2 text-center bg-red-50/40 border-l border-slate-100">
+                            {examTotal !== null ? (
+                              <span className={cn("font-mono font-bold text-sm", examTotal >= 70 ? "text-green-600" : examTotal >= 50 ? "text-amber-600" : "text-red-600")}>{examTotal}%</span>
+                            ) : <span className="text-slate-300">—</span>}
+                          </td>
+                        </>
                       );
                     })()}
                   </tr>
@@ -2178,7 +2261,8 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const examHistory = gradedAssessments.filter(a => a.isExam);
   const avgPct = gradedAssessments.length > 0 ? Math.round(gradedAssessments.reduce((s, a) => s + (a.pct ?? 0), 0) / gradedAssessments.length) : null;
   const scheme = cls ? getWeightingScheme(cls.form, subjectId, cls.weightingSchemeId) : undefined;
-  const weightedTotal = student ? calcWeightedTotal(student.id, assessments, getNature, scheme) : null;
+  const caTotal = student ? calcCATotal(student.id, assessments, getNature, scheme) : null;
+  const examTotal = student ? calcExamTotal(student.id, assessments, getNature, scheme) : null;
 
   const trendIcon = caHistory.length >= 2
     ? (caHistory[caHistory.length - 1].pct! > caHistory[caHistory.length - 2].pct!
@@ -2228,18 +2312,19 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
           {/* Stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div className="bg-white rounded-xl border border-blue-200 p-4 text-center">
-              <p className="text-xs text-blue-600 font-semibold mb-0.5">{lang === "zh" ? "加權總分" : "Weighted Total"}</p>
+              <p className="text-xs text-blue-600 font-semibold mb-0.5">{lang === "zh" ? "CA總分" : "CA Total"}</p>
               {scheme && <p className="text-[9px] text-slate-400 mb-1">{scheme.label}</p>}
-              <p className={cn("text-3xl font-bold font-mono", weightedTotal !== null ? (weightedTotal >= 70 ? "text-green-600" : weightedTotal >= 50 ? "text-amber-600" : "text-red-600") : "text-slate-300")}>{weightedTotal !== null ? `${weightedTotal}%` : avgPct !== null ? `${avgPct}%` : "—"}</p>
+              <p className={cn("text-3xl font-bold font-mono", caTotal !== null ? (caTotal >= 70 ? "text-green-600" : caTotal >= 50 ? "text-amber-600" : "text-red-600") : "text-slate-300")}>{caTotal !== null ? `${caTotal}%` : avgPct !== null ? `${avgPct}%` : "—"}</p>
               {!scheme && avgPct !== null && <p className="text-[9px] text-slate-400">{lang === "zh" ? "簡單平均" : "Simple avg"}</p>}
+            </div>
+            <div className="bg-white rounded-xl border border-red-200 p-4 text-center">
+              <p className="text-xs text-red-600 font-semibold mb-0.5">{lang === "zh" ? "大考總分" : "Exam Total"}</p>
+              {scheme && <p className="text-[9px] text-slate-400 mb-1">{scheme.label}</p>}
+              <p className={cn("text-3xl font-bold font-mono", examTotal !== null ? (examTotal >= 70 ? "text-green-600" : examTotal >= 50 ? "text-amber-600" : "text-red-600") : "text-slate-300")}>{examTotal !== null ? `${examTotal}%` : "—"}</p>
             </div>
             <div className="bg-white rounded-xl border border-slate-200 p-4 text-center">
               <p className="text-xs text-slate-500 mb-1">{t("caAssessments")}</p>
               <p className="text-3xl font-bold font-mono text-blue-600">{caHistory.length}</p>
-            </div>
-            <div className="bg-white rounded-xl border border-slate-200 p-4 text-center">
-              <p className="text-xs text-slate-500 mb-1">{t("examAssessments")}</p>
-              <p className="text-3xl font-bold font-mono text-purple-600">{examHistory.length}</p>
             </div>
             <div className="bg-white rounded-xl border border-slate-200 p-4 text-center">
               <p className="text-xs text-slate-500 mb-1">{lang === "zh" ? "強項學習單元" : "Strong Units"}</p>
@@ -2457,7 +2542,7 @@ function SettingsTab() {
   // Weighting state
   const [showAddWeighting, setShowAddWeighting] = useState(false);
   const [editWeightingId, setEditWeightingId] = useState<string | null>(null);
-  const [weightingForm, setWeightingForm] = useState({ label: "", form: "S6", subjectId: subjects[0]?.id ?? "", examPercentage: 60 });
+  const [weightingForm, setWeightingForm] = useState({ label: "", forms: ["S6"] as string[], subjectIds: [] as string[], examPercentage: 60 });
   const [weightingEntries, setWeightingEntries] = useState<Array<{ natureId: string; percentage: number }>>([]);
   const [deleteWeightingId, setDeleteWeightingId] = useState<string | null>(null);
 
@@ -2505,7 +2590,7 @@ function SettingsTab() {
     if (editWeightingId) {
       updateWeightingScheme(editWeightingId, { label: weightingForm.label.trim(), caEntries, examPercentage });
     } else {
-      addWeightingScheme({ label: weightingForm.label.trim(), form: weightingForm.form, subjectId: weightingForm.subjectId, caEntries, examPercentage });
+      addWeightingScheme({ label: weightingForm.label.trim(), form: weightingForm.forms[0] ?? "", subjectId: weightingForm.subjectIds[0] ?? "", forms: weightingForm.forms, subjectIds: weightingForm.subjectIds, caEntries, examPercentage });
     }
     toast.success(t("saved")); setShowAddWeighting(false); setEditWeightingId(null);
   };
@@ -2623,7 +2708,7 @@ function SettingsTab() {
               <h3 className="text-lg font-bold text-slate-800">{lang === "zh" ? "加權方案" : "Weighting Schemes"}</h3>
               <Button size="sm" onClick={() => {
                 setEditWeightingId(null);
-                setWeightingForm({ label: "", form: "S6", subjectId: subjects[0]?.id ?? "", examPercentage: 60 });
+                setWeightingForm({ label: "", forms: ["S6"], subjectIds: [], examPercentage: 60 });
                 // Pre-populate with one row per nature
                 setWeightingEntries(natures.map(n => ({ natureId: n.id, percentage: 0 })));
                 setShowAddWeighting(true);
@@ -2635,7 +2720,8 @@ function SettingsTab() {
                   <div className="flex-1">
                     <p className="font-semibold text-slate-800 text-sm">{ws.label}</p>
                     <p className="text-xs text-slate-400">
-                      {ws.form} ·{" "}
+                      {(ws.forms ?? [ws.form]).join(", ")} ·{" "}
+                      {ws.subjectIds && ws.subjectIds.length > 0 ? ws.subjectIds.map(id => { const s = subjects.find(x => x.id === id); return s ? (lang === "zh" && s.nameCht ? s.nameCht : s.name) : id; }).join(", ") : (lang === "zh" ? "所有科目" : "All Subjects")} ·{" "}
                       {[...ws.caEntries.map(e => {
                         const nat = natures.find(n => n.id === e.natureId);
                         return nat ? `${lang === "zh" ? nat.nameCht : nat.name}: ${e.percentage}%` : null;
@@ -2647,7 +2733,7 @@ function SettingsTab() {
                   <div className="flex gap-1">
                     <button onClick={() => {
                       setEditWeightingId(ws.id);
-                      setWeightingForm({ label: ws.label, form: ws.form, subjectId: ws.subjectId, examPercentage: ws.examPercentage });
+                      setWeightingForm({ label: ws.label, forms: ws.forms ?? (ws.form ? [ws.form] : ["S6"]), subjectIds: ws.subjectIds ?? (ws.subjectId ? [ws.subjectId] : []), examPercentage: ws.examPercentage });
                       // Build entries: CA entries from scheme + exam entries from natures
                       const allEntries = natures.map(n => {
                         if (n.isExam) {
@@ -3026,11 +3112,41 @@ function SettingsTab() {
           <DialogHeader><DialogTitle>{editWeightingId ? t("edit") : t("addWeightingScheme")}</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
             <div><Label>{t("schemeLabel")}</Label><Input value={weightingForm.label} onChange={e => setWeightingForm(f => ({ ...f, label: e.target.value }))} autoFocus /></div>
-            {!editWeightingId && (
-              <div className="grid grid-cols-2 gap-3">
-                <div><Label>{t("form")}</Label><Select value={weightingForm.form} onValueChange={v => setWeightingForm(f => ({ ...f, form: v }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["S1","S2","S3","S4","S5","S6"].map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}</SelectContent></Select></div>
+            {/* Multi-select: Forms */}
+            <div>
+              <Label className="mb-2 block">{lang === "zh" ? "適用年級（可多選）" : "Applicable Forms (multi-select)"}</Label>
+              <div className="flex flex-wrap gap-2">
+                {["S1","S2","S3","S4","S5","S6"].map(f => {
+                  const checked = weightingForm.forms.includes(f);
+                  return (
+                    <button key={f} type="button"
+                      onClick={() => setWeightingForm(prev => ({ ...prev, forms: checked ? prev.forms.filter(x => x !== f) : [...prev.forms, f] }))}
+                      className={`px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                        checked ? "bg-blue-500 text-white border-blue-500" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400"
+                      }`}>{f}</button>
+                  );
+                })}
               </div>
-            )}
+            </div>
+            {/* Multi-select: Subjects */}
+            <div>
+              <Label className="mb-2 block">{lang === "zh" ? "適用科目（留空 = 所有科目）" : "Applicable Subjects (leave empty = all subjects)"}</Label>
+              <div className="flex flex-wrap gap-2">
+                {subjects.map(s => {
+                  const checked = weightingForm.subjectIds.includes(s.id);
+                  const label = lang === "zh" && s.nameCht ? s.nameCht : s.name;
+                  return (
+                    <button key={s.id} type="button"
+                      onClick={() => setWeightingForm(prev => ({ ...prev, subjectIds: checked ? prev.subjectIds.filter(x => x !== s.id) : [...prev.subjectIds, s.id] }))}
+                      className={`px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                        checked ? "bg-indigo-500 text-white border-indigo-500" : "bg-white text-slate-600 border-slate-300 hover:border-indigo-400"
+                      }`}>{label}</button>
+                  );
+                })}
+                {subjects.length === 0 && <span className="text-xs text-slate-400 italic">{lang === "zh" ? "（無科目）" : "(no subjects)"}</span>}
+              </div>
+              {weightingForm.subjectIds.length === 0 && <p className="text-[10px] text-slate-400 mt-1">{lang === "zh" ? "未選擇 = 適用所有科目" : "None selected = applies to all subjects"}</p>}
+            </div>
             {/* Per-nature percentage breakdown */}
             <div>
               <Label className="mb-2 block">{lang === "zh" ? "各評估性質佔分比例" : "Per-Nature Percentage Breakdown"}</Label>
