@@ -887,7 +887,7 @@ function GradingTab({
 
       {/* Mark Sheet Editor Dialog */}
       <Dialog open={showMarkSheet} onOpenChange={setShowMarkSheet}>
-        <DialogContent className="w-[95vw] max-w-6xl h-[92vh] flex flex-col">
+        <DialogContent className="!w-[95vw] !max-w-[95vw] h-[92vh] flex flex-col p-4">
           <DialogHeader><DialogTitle>{t("editMarkSheet")} — {assessTitle}</DialogTitle></DialogHeader>
         <div className="flex-1 overflow-y-auto overflow-x-auto">
           <MarkSheetEditor
@@ -952,7 +952,7 @@ function MarkSheetEditorDialog({
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="w-[95vw] max-w-6xl h-[92vh] flex flex-col">
+      <DialogContent className="!w-[95vw] !max-w-[95vw] h-[92vh] flex flex-col p-4">
         <DialogHeader><DialogTitle>{t("editMarkSheet")} — {assessTitle}</DialogTitle></DialogHeader>
         <div className="flex-1 overflow-y-auto overflow-x-auto">
           <MarkSheetEditor items={items} setItems={setItems} topics={topics} lang={lang} parseText={parseText} setParseText={setParseText} quickCount={quickCount} setQuickCount={setQuickCount} msTab={activeTab} setMsTab={setActiveTab} t={t as (k: string) => string} />
