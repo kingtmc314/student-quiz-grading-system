@@ -1795,7 +1795,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                     <table className="w-full text-sm">
                       <thead><tr className="border-b border-slate-100 bg-slate-50/50"><th className="text-left px-3 py-1.5 text-xs font-bold text-slate-500">{lang === "zh" ? "學習單元" : "Learning Unit"}</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("score")}</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">%</th><th className="text-center px-2 py-1.5 text-xs font-bold text-slate-500">{t("status")}</th></tr></thead>
                       <tbody>
-                        {topicAnalysis.map(tp => (
+                        {topicAnalysis.filter(tp => tp.pct !== null).map(tp => (
                           <tr key={tp.id} className="border-b border-slate-100 last:border-0">
                             <td className="px-3 py-1.5"><div><span className="text-xs font-semibold text-slate-800">{tp.name}</span></div></td>
                             <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{tp.max > 0 ? `${tp.earned}/${tp.max}` : "—"}</td>
