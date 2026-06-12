@@ -94,6 +94,7 @@ export interface Topic {
   name: string;         // English
   nameCht: string;      // Traditional Chinese
   order: number;
+  color?: string;       // optional hex colour for topic badge
 }
 
 export interface Subject {

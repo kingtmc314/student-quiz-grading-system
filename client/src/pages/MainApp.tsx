@@ -793,11 +793,19 @@ function GradingTab({
 
                 {/* Score cards */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                  {groups.map((group, gi) => (
+                  {groups.map((group, gi) => {
+                    // Compute section earned / max
+                    const sectionMax = group.questions.reduce((s, q) => s + (q.maxMark || 0), 0);
+                    const sectionEarned = group.questions.reduce((s, q) => {
+                      const v = draftScores[q.id];
+                      return s + (typeof v === "number" ? v : 0);
+                    }, 0);
+                    return (
                     <div key={gi}>
                       {group.sectionLabel && (
-                        <div className="mb-2 px-3 py-1.5 bg-blue-50 rounded-lg border border-blue-100">
+                        <div className="mb-2 px-3 py-1.5 bg-blue-50 rounded-lg border border-blue-100 flex items-center justify-between">
                           <p className="text-xs font-bold text-blue-700 uppercase tracking-wide">{group.sectionLabel}</p>
+                          <span className="text-xs font-mono font-bold text-blue-600">{sectionEarned} / {sectionMax}</span>
                         </div>
                       )}
                       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2">
@@ -807,9 +815,10 @@ function GradingTab({
                           const isOver = !isNaN(numVal) && numVal > item.maxMark;
                           const isNeg = !isNaN(numVal) && numVal < 0;
                           const hasVal = val !== "" && !isNaN(numVal);
+                          const topic = item.topicId ? topics.find(tp => tp.id === item.topicId) : null;
                           return (
-                            <div key={item.id} className={cn("rounded-lg border-2 p-2 transition-all", isOver || isNeg ? "border-red-300 bg-red-50" : hasVal ? "border-green-300 bg-green-50" : "border-slate-200 bg-white hover:border-slate-300")}>
-                              <p className="text-xs font-mono font-bold text-slate-600 mb-1 truncate">{item.label}</p>
+                            <div key={item.id} className={cn("rounded-lg border-2 p-2 transition-all flex flex-col gap-1", isOver || isNeg ? "border-red-300 bg-red-50" : hasVal ? "border-green-300 bg-green-50" : "border-slate-200 bg-white hover:border-slate-300")}>
+                              <p className="text-xs font-mono font-bold text-slate-600 truncate">{item.label}</p>
                               <div className="flex items-center gap-0.5">
                                 <Input
                                   type="number"
@@ -824,12 +833,16 @@ function GradingTab({
                                 />
                                 <span className="text-[10px] text-slate-400 shrink-0">/{item.maxMark}</span>
                               </div>
+                              {topic && (
+                                <span className="text-[9px] leading-tight font-medium px-1 py-0.5 rounded truncate" style={{ backgroundColor: topic.color ? topic.color + "22" : "#e0e7ff", color: topic.color || "#4f46e5" }}>{lang === "zh" && topic.nameCht ? topic.nameCht : topic.name}</span>
+                              )}
                             </div>
                           );
                         })}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {/* Footer nav */}
