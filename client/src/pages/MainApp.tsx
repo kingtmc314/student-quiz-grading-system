@@ -25,7 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -1039,15 +1039,56 @@ function MarkSheetEditor({
                 <span className="text-xs text-slate-400 font-mono text-center">{idx + 1}</span>
                 <Input value={item.label} onChange={e => updateItem(item.id, "label", e.target.value)} className={`h-7 text-sm font-mono ${item.isSection ? "font-bold bg-blue-50 text-blue-700" : ""}`} placeholder={item.isSection ? "Section A" : "2(a)"} />
                 <Input type="number" min={0} value={item.isSection ? "" : item.maxMark} onChange={e => updateItem(item.id, "maxMark", parseFloat(e.target.value) || 0)} disabled={item.isSection} className="h-7 text-sm font-mono text-center" placeholder="0" />
-                {topics.length > 0 && (
-                  <Select value={item.topicId ?? "none"} onValueChange={v => updateItem(item.id, "topicId", v === "none" ? undefined : v)} disabled={item.isSection}>
-                    <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">—</SelectItem>
-                      {topics.map(tp => <SelectItem key={tp.id} value={tp.id}>{tp.code ? `${tp.code} ` : ""}{lang === "zh" && tp.nameCht ? tp.nameCht : tp.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                )}
+                {topics.length > 0 && (() => {
+                  // Group topics by Level → Learning Unit for grouped display
+                  const hasSyllabus = topics.some(tp => tp.learningObjective);
+                  if (!hasSyllabus) {
+                    // Flat list for manually-created topics
+                    return (
+                      <Select value={item.topicId ?? "none"} onValueChange={v => updateItem(item.id, "topicId", v === "none" ? undefined : v)} disabled={item.isSection}>
+                        <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">—</SelectItem>
+                          {topics.map(tp => <SelectItem key={tp.id} value={tp.id}>{tp.code ? `${tp.code} ` : ""}{lang === "zh" && tp.nameCht ? tp.nameCht : tp.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    );
+                  }
+                  // Grouped by Level → Learning Unit
+                  const levels = Array.from(new Set(topics.map(tp => tp.level || "Other")));
+                  return (
+                    <Select value={item.topicId ?? "none"} onValueChange={v => updateItem(item.id, "topicId", v === "none" ? undefined : v)} disabled={item.isSection}>
+                      <SelectTrigger className="h-7 text-xs min-w-0">
+                        <SelectValue placeholder="—">
+                          {item.topicId ? (() => {
+                            const tp = topics.find(t => t.id === item.topicId);
+                            if (!tp) return "—";
+                            return <span className="truncate text-xs">{tp.learningObjective ?? tp.name}</span>;
+                          })() : "—"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="max-w-xs">
+                        <SelectItem value="none">— {lang === "zh" ? "無" : "None"}</SelectItem>
+                        {levels.map(level => {
+                          const levelTopics = topics.filter(tp => (tp.level || "Other") === level);
+                          const units = Array.from(new Set(levelTopics.map(tp => tp.learningUnit || "")));
+                          return units.map(unit => (
+                            <SelectGroup key={`${level}-${unit}`}>
+                              <SelectLabel className="text-[10px] font-bold text-slate-500 uppercase tracking-wider px-2 py-1">
+                                {level}{unit ? ` › ${unit}` : ""}
+                              </SelectLabel>
+                              {levelTopics.filter(tp => (tp.learningUnit || "") === unit).map(tp => (
+                                <SelectItem key={tp.id} value={tp.id} className="text-xs py-1">
+                                  <span className="truncate">{tp.learningObjective ?? tp.name}</span>
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          ));
+                        })}
+                      </SelectContent>
+                    </Select>
+                  );
+                })()}
                 <div className="flex justify-center"><input type="checkbox" checked={!!item.isSection} onChange={() => toggleSection(item.id)} className="w-4 h-4 rounded border-slate-300 text-blue-600 cursor-pointer" /></div>
                 <button onClick={() => moveUp(idx)} className="p-0.5 rounded text-slate-300 hover:text-slate-600"><ArrowUp className="w-3.5 h-3.5" /></button>
                 <button onClick={() => removeRow(item.id)} className="p-0.5 rounded text-slate-300 hover:text-red-500"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -1687,7 +1728,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
 // ─── Tab: Settings ────────────────────────────────────────────────────────────
 function SettingsTab() {
-  const { teachers, addTeacher, updateTeacher, deleteTeacher, natures, addNature, updateNature, deleteNature, weightingSchemes, addWeightingScheme, updateWeightingScheme, deleteWeightingScheme, subjects, addTopic, updateTopic, deleteTopic, syllabusItems, setSyllabusItems } = useData();
+  const { teachers, addTeacher, updateTeacher, deleteTeacher, natures, addNature, updateNature, deleteNature, weightingSchemes, addWeightingScheme, updateWeightingScheme, deleteWeightingScheme, subjects, addTopic, updateTopic, deleteTopic, replaceTopicsFromSyllabus, syllabusItems, setSyllabusItems } = useData();
   const { t, lang, setLang } = useI18n();
 
   const [activeSection, setActiveSection] = useState<"teachers" | "natures" | "weighting" | "topics" | "syllabus">("teachers");
@@ -1696,6 +1737,7 @@ function SettingsTab() {
   const syllabusFileRef = useRef<HTMLInputElement>(null);
   const [syllabusPreview, setSyllabusPreview] = useState<import("@/contexts/DataContext").SyllabusItem[]>([]);
   const [syllabusFilter, setSyllabusFilter] = useState<"all" | "Junior" | "Senior">("all");
+  const [syllabusSubjectId, setSyllabusSubjectId] = useState<string>("");
   const [syllabusSearch, setSyllabusSearch] = useState("");
 
   const handleSyllabusFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1730,9 +1772,28 @@ function SettingsTab() {
 
   const handleSaveSyllabus = () => {
     if (syllabusPreview.length === 0) return;
+    // Save to global syllabusItems store
     setSyllabusItems(syllabusPreview);
+    // Also populate the selected subject's topics from syllabus
+    if (syllabusSubjectId) {
+      const topicsFromSyllabus = syllabusPreview.map((s, i) => ({
+        code: `SYL-${String(i + 1).padStart(3, "0")}`,
+        name: s.learningObjective,
+        nameCht: "",
+        order: i + 1,
+        level: s.level,
+        learningUnit: s.learningUnit,
+        learningObjective: s.learningObjective,
+        strand: s.strand,
+        category: s.category,
+        remarks: s.remarks,
+      }));
+      replaceTopicsFromSyllabus(syllabusSubjectId, topicsFromSyllabus);
+      toast.success(lang === "zh" ? `課程大綱已儲存並更新「${subjects.find(s => s.id === syllabusSubjectId)?.name ?? ""}」的學習目標` : `Syllabus saved and topics updated for "${subjects.find(s => s.id === syllabusSubjectId)?.name ?? ""}"`); 
+    } else {
+      toast.success(lang === "zh" ? "課程大綱已儲存（未選擇科目，未更新學習目標）" : "Syllabus saved (no subject selected — topics not updated)");
+    }
     setSyllabusPreview([]);
-    toast.success(lang === "zh" ? "課程大綱已儲存" : "Syllabus saved successfully");
   };
 
   const handleClearSyllabus = () => {
@@ -1931,10 +1992,31 @@ function SettingsTab() {
 
         {activeSection === "syllabus" && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div>
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div className="flex-1 min-w-0">
                 <h3 className="text-lg font-bold text-slate-800">{lang === "zh" ? "課程大綱" : "Syllabus"}</h3>
                 <p className="text-xs text-slate-500 mt-0.5">{lang === "zh" ? `已載入 ${syllabusItems.length} 個學習目標` : `${syllabusItems.length} learning objectives loaded`}</p>
+                {/* Subject selector */}
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-600 shrink-0">{lang === "zh" ? "連結至科目:" : "Link to Subject:"}</span>
+                  <Select value={syllabusSubjectId} onValueChange={setSyllabusSubjectId}>
+                    <SelectTrigger className="h-7 text-xs w-52">
+                      <SelectValue placeholder={lang === "zh" ? "選擇科目…" : "Select subject…"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {subjects.map(s => (
+                        <SelectItem key={s.id} value={s.id}>
+                          {lang === "zh" ? s.nameCht || s.name : s.name} ({s.code} · {s.form})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {syllabusSubjectId && (
+                    <span className="text-xs text-green-600 font-medium">
+                      {lang === "zh" ? `將更新「${subjects.find(s => s.id === syllabusSubjectId)?.name ?? ""}」的學習目標` : `Will update topics for "${subjects.find(s => s.id === syllabusSubjectId)?.name ?? ""}"`}
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="flex gap-2 flex-wrap">
                 <Button size="sm" variant="outline" onClick={() => syllabusFileRef.current?.click()} className="gap-1.5"><Upload className="w-4 h-4" />{lang === "zh" ? "上傳 Excel" : "Upload Excel"}</Button>

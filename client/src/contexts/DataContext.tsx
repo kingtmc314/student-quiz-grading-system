@@ -90,11 +90,18 @@ export interface WeightingScheme {
 
 export interface Topic {
   id: string;
-  code: string;         // e.g. "M2-01"
-  name: string;         // English
+  code: string;         // e.g. "M2-01" or auto-generated from syllabus
+  name: string;         // English (= learningObjective when from syllabus)
   nameCht: string;      // Traditional Chinese
   order: number;
   color?: string;       // optional hex colour for topic badge
+  // Syllabus fields — populated when imported from Excel (hierarchy: Level → Learning Unit → Objective)
+  level?: string;             // "Junior" | "Senior"
+  learningUnit?: string;      // e.g. "1. Basic computation"
+  learningObjective?: string; // e.g. "1.1 recognise the tests of divisibility..."
+  strand?: string;            // e.g. "Number and Algebra"
+  category?: string;          // "Foundation" | "Non-Foundation"
+  remarks?: string;
 }
 
 export interface Subject {
@@ -199,6 +206,8 @@ interface DataContextType {
   updateTopic: (subjectId: string, topicId: string, t: Partial<Topic>) => void;
   deleteTopic: (subjectId: string, topicId: string) => void;
   reorderTopics: (subjectId: string, orderedIds: string[]) => void;
+  // Replace all syllabus-sourced topics for a subject atomically
+  replaceTopicsFromSyllabus: (subjectId: string, topics: Omit<Topic, "id" | "order">[]) => void;
 
   // School year CRUD
   addSchoolYear: (label: string) => void;
@@ -531,6 +540,20 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       return { ...s, topics: s.topics.filter(tp => tp.id !== topicId) };
     }));
   }, []);
+  const replaceTopicsFromSyllabus = useCallback((subjectId: string, newTopics: Omit<Topic, "id" | "order">[]) => {
+    setSubjects(prev => prev.map(s => {
+      if (s.id !== subjectId) return s;
+      // Keep manually-created topics (no learningObjective field), replace syllabus ones
+      const manualTopics = s.topics.filter(tp => !tp.learningObjective);
+      const syllabusTopics: Topic[] = newTopics.map((t, i) => ({
+        ...t,
+        id: nanoid(),
+        order: manualTopics.length + i + 1,
+      }));
+      return { ...s, topics: [...manualTopics, ...syllabusTopics] };
+    }));
+  }, []);
+
   const reorderTopics = useCallback((subjectId: string, orderedIds: string[]) => {
     setSubjects(prev => prev.map(s => {
       if (s.id !== subjectId) return s;
@@ -745,7 +768,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       addNature, updateNature, deleteNature,
       addWeightingScheme, updateWeightingScheme, deleteWeightingScheme,
       addSubject, updateSubject, deleteSubject,
-      addTopic, updateTopic, deleteTopic, reorderTopics,
+      addTopic, updateTopic, deleteTopic, reorderTopics, replaceTopicsFromSyllabus,
       addSchoolYear, deleteSchoolYear,
       addSubjectToYear, removeSubjectFromYear,
       addClass, updateClass, deleteClass,
