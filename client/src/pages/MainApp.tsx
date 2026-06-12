@@ -6,7 +6,7 @@
  * - Tab content renders inline (no routing)
  * - 8 tabs matching reference site structure
  */
-import { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 import {
   Users, ClipboardList, BarChart3, Table2, PieChart, User, Settings2, Database,
@@ -887,9 +887,9 @@ function GradingTab({
 
       {/* Mark Sheet Editor Dialog */}
       <Dialog open={showMarkSheet} onOpenChange={setShowMarkSheet}>
-        <DialogContent className="w-full max-w-3xl max-h-[90vh] flex flex-col">
+        <DialogContent className="w-full max-w-5xl max-h-[90vh] flex flex-col">
           <DialogHeader><DialogTitle>{t("editMarkSheet")} — {assessTitle}</DialogTitle></DialogHeader>
-        <div className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="flex-1 overflow-y-auto overflow-x-auto">
           <MarkSheetEditor
             items={msItems}
               setItems={setMsItems}
@@ -952,9 +952,9 @@ function MarkSheetEditorDialog({
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="w-full max-w-3xl max-h-[90vh] flex flex-col">
+      <DialogContent className="w-full max-w-5xl max-h-[90vh] flex flex-col">
         <DialogHeader><DialogTitle>{t("editMarkSheet")} — {assessTitle}</DialogTitle></DialogHeader>
-        <div className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="flex-1 overflow-y-auto overflow-x-auto">
           <MarkSheetEditor items={items} setItems={setItems} topics={topics} lang={lang} parseText={parseText} setParseText={setParseText} quickCount={quickCount} setQuickCount={setQuickCount} msTab={activeTab} setMsTab={setActiveTab} t={t as (k: string) => string} />
         </div>
         <DialogFooter>
@@ -982,6 +982,10 @@ function MarkSheetEditor({
   t: (k: string) => string;
 }) {
   const maxTotal = totalMaxMarks(items);
+
+  // Per-row pending level/unit selections (before objective is chosen)
+  const [pendingLevel, setPendingLevel] = React.useState<Record<string, string>>({});
+  const [pendingUnit, setPendingUnit] = React.useState<Record<string, string>>({});
 
   const addRow = (isSection = false) => {
     setItems(prev => [...prev, { id: nanoid(), label: isSection ? "Section A" : "", maxMark: 0, isSection }]);
@@ -1026,7 +1030,7 @@ function MarkSheetEditor({
       <TabsContent value="editor">
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="overflow-x-auto">
-          <div className={`grid gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase tracking-wide text-slate-500 min-w-[480px] ${topics.length > 0 ? "grid-cols-[2rem_1fr_6rem_7rem_6rem_2rem_2rem]" : "grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"}`}>
+          <div className={`grid gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase tracking-wide text-slate-500 ${topics.length > 0 ? "min-w-[820px] grid-cols-[2rem_1fr_6rem_minmax(0,1fr)_6rem_2rem_2rem]" : "min-w-[480px] grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"}`}>
             <span>#</span><span>{t("label")}</span><span className="text-center">{t("maxMark")}</span>
             {topics.length > 0 && <span className="flex items-center gap-1"><Tag className="w-3 h-3" />{t("topicTag")}</span>}
             <span className="text-center">Section?</span><span></span><span></span>
@@ -1035,15 +1039,13 @@ function MarkSheetEditor({
             <div className="py-8 text-center text-slate-400 text-sm">{t("noData")}</div>
           ) : (
             items.map((item, idx) => (
-              <div key={item.id} className={`grid gap-2 px-3 py-1.5 items-center border-b border-slate-100 last:border-0 min-w-[480px] ${topics.length > 0 ? "grid-cols-[2rem_1fr_6rem_7rem_6rem_2rem_2rem]" : "grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"} ${item.isSection ? "bg-blue-50" : idx % 2 === 0 ? "bg-white" : "bg-slate-50/50"}`}>
+              <div key={item.id} className={`grid gap-2 px-3 py-1.5 items-center border-b border-slate-100 last:border-0 ${topics.length > 0 ? "min-w-[820px] grid-cols-[2rem_1fr_6rem_minmax(0,1fr)_6rem_2rem_2rem]" : "min-w-[480px] grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"} ${item.isSection ? "bg-blue-50" : idx % 2 === 0 ? "bg-white" : "bg-slate-50/50"}`}>
                 <span className="text-xs text-slate-400 font-mono text-center">{idx + 1}</span>
                 <Input value={item.label} onChange={e => updateItem(item.id, "label", e.target.value)} className={`h-7 text-sm font-mono ${item.isSection ? "font-bold bg-blue-50 text-blue-700" : ""}`} placeholder={item.isSection ? "Section A" : "2(a)"} />
                 <Input type="number" min={0} value={item.isSection ? "" : item.maxMark} onChange={e => updateItem(item.id, "maxMark", parseFloat(e.target.value) || 0)} disabled={item.isSection} className="h-7 text-sm font-mono text-center" placeholder="0" />
                 {topics.length > 0 && (() => {
-                  // Group topics by Level → Learning Unit for grouped display
                   const hasSyllabus = topics.some(tp => tp.learningObjective);
                   if (!hasSyllabus) {
-                    // Flat list for manually-created topics
                     return (
                       <Select value={item.topicId ?? "none"} onValueChange={v => updateItem(item.id, "topicId", v === "none" ? undefined : v)} disabled={item.isSection}>
                         <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
@@ -1054,39 +1056,76 @@ function MarkSheetEditor({
                       </Select>
                     );
                   }
-                  // Grouped by Level → Learning Unit
+                  // 3-step cascading selector: Level → Learning Unit → Objective
+                  // Use saved topicId as source of truth; pending state for mid-selection
+                  const savedTopic = item.topicId ? topics.find(tp => tp.id === item.topicId) : undefined;
+                  const effectiveLevel = savedTopic?.level ?? pendingLevel[item.id] ?? "";
+                  const effectiveUnit = savedTopic?.learningUnit ?? pendingUnit[item.id] ?? "";
                   const levels = Array.from(new Set(topics.map(tp => tp.level || "Other")));
+                  const unitsForLevel = effectiveLevel ? Array.from(new Set(topics.filter(tp => (tp.level || "Other") === effectiveLevel).map(tp => tp.learningUnit || ""))) : [];
+                  const objectivesForUnit = (effectiveLevel && effectiveUnit) ? topics.filter(tp => (tp.level || "Other") === effectiveLevel && (tp.learningUnit || "") === effectiveUnit) : [];
                   return (
-                    <Select value={item.topicId ?? "none"} onValueChange={v => updateItem(item.id, "topicId", v === "none" ? undefined : v)} disabled={item.isSection}>
-                      <SelectTrigger className="h-7 text-xs min-w-0">
-                        <SelectValue placeholder="—">
-                          {item.topicId ? (() => {
-                            const tp = topics.find(t => t.id === item.topicId);
-                            if (!tp) return "—";
-                            return <span className="truncate text-xs">{tp.learningObjective ?? tp.name}</span>;
-                          })() : "—"}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent className="max-w-xs">
-                        <SelectItem value="none">— {lang === "zh" ? "無" : "None"}</SelectItem>
-                        {levels.map(level => {
-                          const levelTopics = topics.filter(tp => (tp.level || "Other") === level);
-                          const units = Array.from(new Set(levelTopics.map(tp => tp.learningUnit || "")));
-                          return units.map(unit => (
-                            <SelectGroup key={`${level}-${unit}`}>
-                              <SelectLabel className="text-[10px] font-bold text-slate-500 uppercase tracking-wider px-2 py-1">
-                                {level}{unit ? ` › ${unit}` : ""}
-                              </SelectLabel>
-                              {levelTopics.filter(tp => (tp.learningUnit || "") === unit).map(tp => (
-                                <SelectItem key={tp.id} value={tp.id} className="text-xs py-1">
-                                  <span className="truncate">{tp.learningObjective ?? tp.name}</span>
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          ));
-                        })}
-                      </SelectContent>
-                    </Select>
+                    <div className="flex gap-1 items-center min-w-0">
+                      {/* Step 1: Level */}
+                      <Select
+                        value={effectiveLevel || "none"}
+                        onValueChange={v => {
+                          updateItem(item.id, "topicId", undefined);
+                          setPendingUnit(prev => ({ ...prev, [item.id]: "" }));
+                          setPendingLevel(prev => ({ ...prev, [item.id]: v === "none" ? "" : v }));
+                        }}
+                        disabled={item.isSection}
+                      >
+                        <SelectTrigger className="h-7 text-xs w-24 shrink-0">
+                          <SelectValue placeholder={lang === "zh" ? "級別" : "Level"} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">—</SelectItem>
+                          {levels.map(lv => <SelectItem key={lv} value={lv}>{lv}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                      {/* Step 2: Learning Unit */}
+                      {effectiveLevel && (
+                        <Select
+                          value={effectiveUnit || "none"}
+                          onValueChange={v => {
+                            updateItem(item.id, "topicId", undefined);
+                            setPendingUnit(prev => ({ ...prev, [item.id]: v === "none" ? "" : v }));
+                          }}
+                          disabled={item.isSection}
+                        >
+                          <SelectTrigger className="h-7 text-xs w-44 shrink-0">
+                            <SelectValue placeholder={lang === "zh" ? "學習單元" : "Unit"} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">—</SelectItem>
+                            {unitsForLevel.map(u => <SelectItem key={u} value={u}>{u}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      )}
+                      {/* Step 3: Objective */}
+                      {effectiveLevel && effectiveUnit && (
+                        <Select
+                          value={item.topicId ?? "none"}
+                          onValueChange={v => {
+                            updateItem(item.id, "topicId", v === "none" ? undefined : v);
+                          }}
+                          disabled={item.isSection}
+                        >
+                          <SelectTrigger className="h-7 text-xs flex-1 min-w-0">
+                            <SelectValue placeholder={lang === "zh" ? "學習目標" : "Objective"} />
+                          </SelectTrigger>
+                          <SelectContent className="max-w-sm">
+                            <SelectItem value="none">—</SelectItem>
+                            {objectivesForUnit.map(tp => (
+                              <SelectItem key={tp.id} value={tp.id} className="text-xs">
+                                {tp.learningObjective ?? tp.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </div>
                   );
                 })()}
                 <div className="flex justify-center"><input type="checkbox" checked={!!item.isSection} onChange={() => toggleSection(item.id)} className="w-4 h-4 rounded border-slate-300 text-blue-600 cursor-pointer" /></div>
