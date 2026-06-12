@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.3.6";
+const APP_VERSION = "v1.3.7";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -1742,6 +1742,15 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const cls = yearId && subjectId && classId ? getClass(yearId, subjectId, classId) : undefined;
 
   const [summaryFilter, setSummaryFilter] = useState<"all" | "ca" | "exam">("all");
+  const [collapsedTerms, setCollapsedTerms] = useState<Set<string>>(new Set());
+
+  const toggleTerm = (term: string) => {
+    setCollapsedTerms(prev => {
+      const next = new Set(prev);
+      if (next.has(term)) next.delete(term); else next.add(term);
+      return next;
+    });
+  };
 
   if (!year || !subject || !cls) {
     return <div className="h-full flex items-center justify-center text-slate-400 text-sm">{lang === "zh" ? "請在側欄選擇學年、科目及班別" : "Select School Year, Subject and Class in the sidebar"}</div>;
@@ -1850,7 +1859,55 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     toast.success(lang === "zh" ? "已匯出 Excel" : "Excel exported");
   };
 
-  const totalVisibleCols = termGroups.reduce((s, g) => s + g.caAssess.length + g.examAssess.length, 0);
+  const totalVisibleCols = termGroups.reduce((s, g) => {
+    const collapsed = collapsedTerms.has(g.term);
+    return s + (collapsed ? 0 : g.caAssess.length + g.examAssess.length);
+  }, 0);
+
+  // Compute per-column stats (avg, high, low) for the statistics footer
+  const flatVisibleAssess = termGroups.flatMap(g =>
+    collapsedTerms.has(g.term) ? [] : [...g.caAssess, ...g.examAssess]
+  );
+  const colStats = flatVisibleAssess.map(a => {
+    const scores = sortedStudents
+      .map(s => getStudentAssessmentTotal(s.id, a.id))
+      .filter((v): v is number => v !== null);
+    if (scores.length === 0) return { avg: null, high: null, low: null };
+    const avg = Math.round(scores.reduce((s, v) => s + v, 0) / scores.length * 10) / 10;
+    return { avg, high: Math.max(...scores), low: Math.min(...scores) };
+  });
+  const caScores = sortedStudents.map(s => calcCATotal(s.id, assessments, getNature, scheme)).filter((v): v is number => v !== null);
+  const examScores = sortedStudents.map(s => calcExamTotal(s.id, assessments, getNature, scheme)).filter((v): v is number => v !== null);
+  const caStat = caScores.length > 0 ? { avg: Math.round(caScores.reduce((s,v)=>s+v,0)/caScores.length*10)/10, high: Math.max(...caScores), low: Math.min(...caScores) } : null;
+  const examStat = examScores.length > 0 ? { avg: Math.round(examScores.reduce((s,v)=>s+v,0)/examScores.length*10)/10, high: Math.max(...examScores), low: Math.min(...examScores) } : null;
+
+  const handlePrint = () => {
+    const flatAssess = termGroups.flatMap(g => collapsedTerms.has(g.term) ? [] : [...g.caAssess, ...g.examAssess]);
+    const rows = sortedStudents.map(s => {
+      const caT = calcCATotal(s.id, assessments, getNature, scheme);
+      const examT = calcExamTotal(s.id, assessments, getNature, scheme);
+      return [
+        s.classNo,
+        lang === "zh" && s.nameCht ? s.nameCht : s.name,
+        ...flatAssess.map(a => { const t = getStudentAssessmentTotal(s.id, a.id); return t !== null ? `${t}/${a.max}` : "—"; }),
+        caT !== null ? `${caT}%` : "—",
+        examT !== null ? `${examT}%` : "—",
+      ];
+    });
+    const headers = ["#", lang === "zh" ? "姓名" : "Name", ...flatAssess.map(a => a.code || a.title), lang === "zh" ? "CA總分" : "CA Total", lang === "zh" ? "大考總分" : "Exam Total"];
+    const tableHtml = `<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-size:11px;width:100%">
+      <thead><tr style="background:#f1f5f9">${headers.map(h => `<th>${h}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map((r,i) => `<tr style="background:${i%2===0?"#fff":"#f8fafc"}">${r.map(c => `<td style="text-align:center">${c}</td>`).join("")}</tr>`).join("")}</tbody>
+    </table>`;
+    const win = window.open("", "_blank");
+    if (!win) return;
+    win.document.write(`<!DOCTYPE html><html><head><title>${cls.name} — ${lang === "zh" ? "統測/大考總表" : "Summary Table"}</title>
+      <style>body{font-family:sans-serif;padding:16px}h2{font-size:14px;margin-bottom:8px}@media print{@page{size:landscape}}</style></head>
+      <body><h2>${cls.name} — ${lang === "zh" ? "統測/大考總表" : "Summary Table"} (${year.label})</h2>${tableHtml}</body></html>`);
+    win.document.close();
+    win.focus();
+    win.print();
+  };
 
   return (
     <div className="h-full overflow-y-auto p-4 space-y-4">
@@ -1867,6 +1924,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
           </div>
           <Button size="sm" variant="outline" onClick={handleExportCSV} className="gap-1.5"><Download className="w-4 h-4" />{t("exportCSV")}</Button>
           <Button size="sm" variant="outline" onClick={handleExportExcel} className="gap-1.5 border-green-300 text-green-700 hover:bg-green-50"><Download className="w-4 h-4" />{lang === "zh" ? "匯出 Excel" : "Export Excel"}</Button>
+          <Button size="sm" variant="outline" onClick={handlePrint} className="gap-1.5 border-purple-300 text-purple-700 hover:bg-purple-50"><Printer className="w-4 h-4" />{lang === "zh" ? "列印/PDF" : "Print / PDF"}</Button>
         </div>
       </div>
 
@@ -1976,6 +2034,47 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                 );
               })}
             </tbody>
+            {/* Statistics footer row */}
+            {sortedStudents.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-slate-300 bg-slate-100">
+                  <td className="px-3 py-2 sticky left-0 bg-slate-100" />
+                  <td className="px-3 py-2 sticky left-10 bg-slate-100">
+                    <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wide">{lang === "zh" ? "班級統計" : "Class Stats"}</div>
+                    <div className="text-[9px] text-slate-400">ø avg ▲ high ▼ low</div>
+                  </td>
+                  {colStats.map((stat, i) => (
+                    <td key={i} className="px-2 py-1.5 text-center border-l border-slate-200">
+                      {stat.avg !== null ? (
+                        <div className="space-y-0.5">
+                          <div className="text-[10px] font-bold text-blue-600">ø {stat.avg}</div>
+                          <div className="text-[9px] text-green-600">▲ {stat.high}</div>
+                          <div className="text-[9px] text-red-500">▼ {stat.low}</div>
+                        </div>
+                      ) : <span className="text-slate-300 text-[10px]">—</span>}
+                    </td>
+                  ))}
+                  <td className="px-2 py-1.5 text-center bg-blue-50/60 border-l border-slate-200">
+                    {caStat ? (
+                      <div className="space-y-0.5">
+                        <div className="text-[10px] font-bold text-blue-600">ø {caStat.avg}%</div>
+                        <div className="text-[9px] text-green-600">▲ {caStat.high}%</div>
+                        <div className="text-[9px] text-red-500">▼ {caStat.low}%</div>
+                      </div>
+                    ) : <span className="text-slate-300 text-[10px]">—</span>}
+                  </td>
+                  <td className="px-2 py-1.5 text-center bg-red-50/40 border-l border-slate-200">
+                    {examStat ? (
+                      <div className="space-y-0.5">
+                        <div className="text-[10px] font-bold text-red-600">ø {examStat.avg}%</div>
+                        <div className="text-[9px] text-green-600">▲ {examStat.high}%</div>
+                        <div className="text-[9px] text-red-500">▼ {examStat.low}%</div>
+                      </div>
+                    ) : <span className="text-slate-300 text-[10px]">—</span>}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       )}
