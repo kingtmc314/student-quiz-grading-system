@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.3.5";
+const APP_VERSION = "v1.3.6";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -252,13 +252,14 @@ function StudentMgmtTab({
   setClassId: (v: string) => void;
 }) {
   const {
-    schoolYears, subjects, teachers, weightingSchemes,
+    schoolYears, subjects, teachers, weightingSchemes, natures,
     addSchoolYear, deleteSchoolYear,
     addSubjectToYear, removeSubjectFromYear, getGlobalSubject,
     addClass, updateClass, deleteClass,
     addStudent, updateStudent, deleteStudent, importStudents,
     getSchoolYear, getYearSubject, getClass,
     addSubject, updateSubject, deleteSubject,
+    getNature, getWeightingScheme,
   } = useData();
   const { t, lang } = useI18n();
 
@@ -460,7 +461,7 @@ function StudentMgmtTab({
               </div>
             </div>
             {/* Weighting scheme selector for this class */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs text-slate-500 shrink-0">{lang === "zh" ? "加權方案:" : "Weighting Scheme:"}</span>
               <Select
                 value={cls.weightingSchemeId ?? "__auto__"}
@@ -472,7 +473,7 @@ function StudentMgmtTab({
                 <SelectContent>
                   <SelectItem value="__auto__">{lang === "zh" ? "自動配對（按年級/科目）" : "Auto-match (by form/subject)"}</SelectItem>
                   {weightingSchemes
-                    .filter(ws => ws.form === cls.form)
+                    .filter(ws => (ws.forms ?? [ws.form]).includes(cls.form))
                     .map(ws => (
                       <SelectItem key={ws.id} value={ws.id}>{ws.label}</SelectItem>
                     ))
@@ -480,6 +481,36 @@ function StudentMgmtTab({
                 </SelectContent>
               </Select>
             </div>
+            {/* Scheme preview: per-nature breakdown */}
+            {(() => {
+              const scheme = getWeightingScheme(cls.form, subjectId, cls.weightingSchemeId);
+              if (!scheme) return null;
+              // Build all entries: CA entries + exam entries derived from caEntries with isExam natures
+              const allEntries = [
+                ...scheme.caEntries,
+                // also include any exam-nature entries stored in caEntries
+              ].filter(e => e.percentage > 0);
+              if (allEntries.length === 0) return null;
+              return (
+                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                  <span className="text-[10px] text-slate-400 shrink-0">{scheme.label}:</span>
+                  {allEntries.map(e => {
+                    const nat = natures.find(n => n.id === e.natureId);
+                    const isExam = nat?.isExam ?? false;
+                    const natLabel = lang === "zh" && nat?.nameCht ? nat.nameCht : (nat?.name ?? e.natureId);
+                    return (
+                      <span key={e.natureId} className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                        isExam ? "bg-red-50 text-red-600 border border-red-200" : "bg-blue-50 text-blue-600 border border-blue-200"
+                      }`}>
+                        <span>{natLabel}</span>
+                        <span className="text-slate-400 font-normal">·</span>
+                        <span>{e.percentage}%</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
           <div className="overflow-x-auto overflow-y-auto max-h-[60vh]">
             <table className="w-full text-sm">
