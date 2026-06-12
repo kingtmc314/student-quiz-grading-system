@@ -607,11 +607,12 @@ function GradingTab({
 
   const handleSave = () => {
     if (!selectedStudentId || !yearId || !subjectId || !classId || !assessmentId) return;
-    const scoreArr = questions.map(q => ({
-      itemId: q.id,
-      score: typeof draftScores[q.id] === "number" ? (draftScores[q.id] as number) : 0,
-    }));
-    upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: scoreArr as any });
+    // Build scores as Record<markItemId, value> as expected by ScoreEntry
+    const scoresRecord: Record<string, number | null> = {};
+    questions.forEach(q => {
+      scoresRecord[q.id] = typeof draftScores[q.id] === "number" ? (draftScores[q.id] as number) : 0;
+    });
+    upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: scoresRecord });
     setDirty(false);
     toast.success(t("saved"));
   };
