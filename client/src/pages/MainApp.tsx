@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.3.0";
+const APP_VERSION = "v1.3.1";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -601,7 +601,7 @@ function StudentMgmtTab({
 function GradingTab({
   yearId, subjectId, classId,
 }: { yearId: string; subjectId: string; classId: string }) {
-  const { getSchoolYear, getSubject, getClass, getAssessment, addAssessment, deleteAssessment, upsertScore, deleteScore, natures, teachers, getGlobalSubject, updateMarkSheet: updateMarkSheetCtx } = useData();
+  const { getSchoolYear, getSubject, getClass, getAssessment, addAssessment, updateAssessment, deleteAssessment, upsertScore, deleteScore, natures, teachers, getGlobalSubject, updateMarkSheet: updateMarkSheetCtx } = useData();
   const { t, lang } = useI18n();
 
   const year = yearId ? getSchoolYear(yearId) : undefined;
@@ -631,6 +631,16 @@ function GradingTab({
   const [newTeacherId, setNewTeacherId] = useState(teachers[0]?.id ?? "");
   const [newDate, setNewDate] = useState("");
   const [deleteAssessmentId, setDeleteAssessmentId] = useState<string | null>(null);
+
+  // Edit assessment dialog
+  const [showEditAssessment, setShowEditAssessment] = useState(false);
+  const [editCode, setEditCode] = useState("");
+  const [editTitle, setEditTitle] = useState("");
+  const [editTitleCht, setEditTitleCht] = useState("");
+  const [editTerm, setEditTerm] = useState<Term>("Term 1");
+  const [editNatureId, setEditNatureId] = useState("");
+  const [editTeacherId, setEditTeacherId] = useState("");
+  const [editDate, setEditDate] = useState("");
 
   const assessment = yearId && subjectId && classId && assessmentId ? getAssessment(yearId, subjectId, classId, assessmentId) : undefined;
   const globalSubject = subjectId ? getGlobalSubject(subjectId) : undefined;
@@ -813,6 +823,18 @@ function GradingTab({
           <Button size="sm" variant="outline" onClick={() => setShowAddAssessment(true)} className="gap-1 h-8 text-xs shrink-0"><Plus className="w-3.5 h-3.5" />{t("addAssessment")}</Button>
           {assessment && (
             <Button size="sm" variant="outline" onClick={openMarkSheet} className="gap-1 h-8 text-xs shrink-0"><FileEdit className="w-3.5 h-3.5" />{t("editMarkSheet")}</Button>
+          )}
+          {assessment && (
+            <button onClick={() => {
+              setEditCode(assessment.code ?? "");
+              setEditTitle(assessment.title);
+              setEditTitleCht(assessment.titleCht ?? "");
+              setEditTerm(assessment.term ?? "Term 1");
+              setEditNatureId(assessment.natureId ?? "");
+              setEditTeacherId(assessment.teacherId ?? "");
+              setEditDate(assessment.date ?? "");
+              setShowEditAssessment(true);
+            }} className="p-1.5 rounded text-slate-300 hover:text-blue-500 hover:bg-blue-50 transition-colors shrink-0" title={lang === "zh" ? "編輯評估資料" : "Edit assessment"}><Pencil className="w-4 h-4" /></button>
           )}
           {assessment && (
             <button onClick={() => setDeleteAssessmentId(assessment.id)} className="p-1.5 rounded text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"><Trash2 className="w-4 h-4" /></button>
@@ -999,6 +1021,43 @@ function GradingTab({
           </div>
         </div>
       )}
+
+      {/* Edit Assessment Dialog */}
+      <Dialog open={showEditAssessment} onOpenChange={setShowEditAssessment}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader><DialogTitle>{lang === "zh" ? "編輯評估資料" : "Edit Assessment"}</DialogTitle></DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div><Label>{t("code")} (e.g. T1Q1)</Label><Input value={editCode} onChange={e => setEditCode(e.target.value)} placeholder="T1Q1" autoFocus /></div>
+              <div><Label>{t("date")}</Label><Input type="date" value={editDate} onChange={e => setEditDate(e.target.value)} /></div>
+            </div>
+            <div><Label>{t("title")} (English)</Label><Input value={editTitle} onChange={e => setEditTitle(e.target.value)} placeholder="Quiz 1 — Differentiation" /></div>
+            <div><Label>{t("titleCht")}</Label><Input value={editTitleCht} onChange={e => setEditTitleCht(e.target.value)} placeholder="小測一 — 微分" /></div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div><Label>{t("term")}</Label><Select value={editTerm} onValueChange={v => setEditTerm(v as Term)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Term 1">{t("term1")}</SelectItem><SelectItem value="Term 2">{t("term2")}</SelectItem><SelectItem value="Full Year">{t("fullYear")}</SelectItem></SelectContent></Select></div>
+              <div><Label>{t("nature")}</Label><Select value={editNatureId} onValueChange={setEditNatureId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{natures.map(n => <SelectItem key={n.id} value={n.id}>{lang === "zh" ? n.nameCht : n.name}</SelectItem>)}</SelectContent></Select></div>
+            </div>
+            <div><Label>{t("teacher")}</Label><Select value={editTeacherId} onValueChange={setEditTeacherId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{teachers.map(tc => <SelectItem key={tc.id} value={tc.id}>{lang === "zh" ? tc.nameCht : tc.name} ({tc.code})</SelectItem>)}</SelectContent></Select></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEditAssessment(false)}>{t("cancel")}</Button>
+            <Button onClick={() => {
+              if (!assessment || !yearId || !subjectId || !classId) return;
+              updateAssessment(yearId, subjectId, classId, assessment.id, {
+                code: editCode.trim() || undefined,
+                title: editTitle.trim() || assessment.title,
+                titleCht: editTitleCht.trim() || undefined,
+                term: editTerm,
+                natureId: editNatureId || assessment.natureId,
+                teacherId: editTeacherId || assessment.teacherId,
+                date: editDate || undefined,
+              });
+              setShowEditAssessment(false);
+              toast.success(lang === "zh" ? "評估資料已更新" : "Assessment updated");
+            }} disabled={!editTitle.trim() || !editNatureId}>{t("save")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Assessment Dialog */}
       <Dialog open={showAddAssessment} onOpenChange={setShowAddAssessment}>
