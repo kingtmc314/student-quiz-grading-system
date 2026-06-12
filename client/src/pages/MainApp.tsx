@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.0.0";
+const APP_VERSION = "v1.1.0";
 
 // ─── Tab IDs ──────────────────────────────────────────────────────────────────
 type TabId = "students" | "grading" | "weakness" | "summary" | "chart" | "profile" | "settings" | "backup";
@@ -72,6 +72,7 @@ function colorForPct(pct: number | null): string {
 function getScoreTotal(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }, studentId: string): number | null {
   const entry = assessment.scores.find(s => s.studentId === studentId);
   if (!entry) return null;
+  if (entry.isAbsent) return null; // Absent students excluded from totals
   if (Array.isArray(entry.scores)) {
     return (entry.scores as Array<{ itemId: string; score: number | null }>).reduce((s, e) => s + (e.score ?? 0), 0);
   }
@@ -80,7 +81,7 @@ function getScoreTotal(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[]
 
 function getScoreMap(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }, studentId: string): Record<string, number> {
   const entry = assessment.scores.find(s => s.studentId === studentId);
-  if (!entry) return {};
+  if (!entry || entry.isAbsent) return {};
   const map: Record<string, number> = {};
   if (Array.isArray(entry.scores)) {
     (entry.scores as Array<{ itemId: string; score: number | null }>).forEach(s => { map[s.itemId] = s.score ?? 0; });
@@ -511,6 +512,7 @@ function GradingTab({
   const [assessmentId, setAssessmentId] = useState("");
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [draftScores, setDraftScores] = useState<Record<string, number | "">>({});
+  const [isAbsent, setIsAbsent] = useState(false);
   const [dirty, setDirty] = useState(false);
 
   // Mark sheet editor state
@@ -565,6 +567,7 @@ function GradingTab({
     if (assessment && selectedStudentId) {
       const existing = assessment.scores.find(s => s.studentId === selectedStudentId);
       if (existing) {
+        setIsAbsent(existing.isAbsent ?? false);
         const map: Record<string, number | ""> = {};
         if (Array.isArray(existing.scores)) {
           (existing.scores as Array<{ itemId: string; score: number | null }>).forEach(s => { map[s.itemId] = s.score ?? ""; });
@@ -573,6 +576,7 @@ function GradingTab({
         }
         setDraftScores(map);
       } else {
+        setIsAbsent(false);
         setDraftScores({});
       }
       setDirty(false);
@@ -607,12 +611,16 @@ function GradingTab({
 
   const handleSave = () => {
     if (!selectedStudentId || !yearId || !subjectId || !classId || !assessmentId) return;
-    // Build scores as Record<markItemId, value> as expected by ScoreEntry
-    const scoresRecord: Record<string, number | null> = {};
-    questions.forEach(q => {
-      scoresRecord[q.id] = typeof draftScores[q.id] === "number" ? (draftScores[q.id] as number) : 0;
-    });
-    upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: scoresRecord });
+    if (isAbsent) {
+      upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: {}, isAbsent: true });
+    } else {
+      // Build scores as Record<markItemId, value> as expected by ScoreEntry
+      const scoresRecord: Record<string, number | null> = {};
+      questions.forEach(q => {
+        scoresRecord[q.id] = typeof draftScores[q.id] === "number" ? (draftScores[q.id] as number) : 0;
+      });
+      upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: scoresRecord, isAbsent: false });
+    }
     setDirty(false);
     toast.success(t("saved"));
   };
@@ -623,6 +631,7 @@ function GradingTab({
     if (!selectedStudentId || !yearId || !subjectId || !classId || !assessmentId) return;
     deleteScore(yearId, subjectId, classId, assessmentId, selectedStudentId);
     setDraftScores({});
+    setIsAbsent(false);
     setDirty(false);
     toast.success(t("deleted"));
   };
@@ -714,7 +723,10 @@ function GradingTab({
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <span className="font-mono">{t("total")}: {maxTotal}</span>
             <span>·</span>
-            <span>{assessment.scores.length}/{cls.students.length} {t("graded")}</span>
+            <span>{assessment.scores.filter(s => !s.isAbsent).length}/{cls.students.length} {t("graded")}</span>
+            {assessment.scores.some(s => s.isAbsent) && (
+              <><span>·</span><span className="text-orange-500">{assessment.scores.filter(s => s.isAbsent).length} ABS</span></>
+            )}
           </div>
         )}
       </div>
@@ -747,8 +759,10 @@ function GradingTab({
             <div className="flex-1 overflow-y-auto">
               {sortedStudents.map(student => {
                 const total = getStudentTotal(student.id);
+                const studentEntry = assessment?.scores.find(s => s.studentId === student.id);
+                const studentIsAbsent = studentEntry?.isAbsent ?? false;
                 const isSelected = selectedStudentId === student.id;
-                const isGraded = total !== null;
+                const isGraded = total !== null || studentIsAbsent;
                 const displayName = lang === "zh" && student.nameCht ? student.nameCht : student.name;
                 return (
                   <button key={student.id} onClick={() => setSelectedStudentId(student.id)} className={cn("w-full text-left px-3 py-2.5 border-b border-slate-100 last:border-0 transition-colors", isSelected ? "bg-blue-600 text-white" : "hover:bg-slate-50")}>
@@ -757,7 +771,10 @@ function GradingTab({
                         <span className={cn("text-xs font-mono shrink-0", isSelected ? "text-blue-200" : "text-slate-400")}>{student.classNo}</span>
                         <span className={cn("text-sm font-semibold truncate", isSelected ? "text-white" : "text-slate-800")}>{displayName}</span>
                       </div>
-                      {isGraded && <span className={cn("text-xs font-mono font-bold shrink-0", isSelected ? "text-blue-100" : "text-blue-600")}>{total}/{maxTotal}</span>}
+                      {studentIsAbsent
+                        ? <span className={cn("text-xs font-bold shrink-0 px-1.5 py-0.5 rounded", isSelected ? "bg-orange-300 text-orange-900" : "bg-orange-100 text-orange-600")}>ABS</span>
+                        : isGraded && <span className={cn("text-xs font-mono font-bold shrink-0", isSelected ? "text-blue-100" : "text-blue-600")}>{total}/{maxTotal}</span>
+                      }
                     </div>
                   </button>
                 );
@@ -783,17 +800,43 @@ function GradingTab({
                     <span className="text-xs text-slate-400">{selectedIdx + 1}/{sortedStudents.length}</span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <div className="text-right">
-                      <p className="text-2xl font-bold font-mono text-blue-600 leading-none">{currentTotal}</p>
-                      <p className="text-xs text-slate-400">/ {maxTotal}{maxTotal > 0 ? ` (${Math.round((currentTotal / maxTotal) * 100)}%)` : ""}</p>
-                    </div>
+                    {/* ABS Toggle */}
+                    <button
+                      onClick={() => { setIsAbsent(prev => !prev); setDirty(true); }}
+                      className={cn(
+                        "px-2.5 py-1 rounded text-xs font-bold border-2 transition-all",
+                        isAbsent
+                          ? "bg-orange-500 border-orange-500 text-white"
+                          : "bg-white border-slate-300 text-slate-500 hover:border-orange-400 hover:text-orange-500"
+                      )}
+                      title={lang === "zh" ? "標記缺席" : "Mark as Absent"}
+                    >
+                      ABS
+                    </button>
+                    {!isAbsent && (
+                      <div className="text-right">
+                        <p className="text-2xl font-bold font-mono text-blue-600 leading-none">{currentTotal}</p>
+                        <p className="text-xs text-slate-400">/ {maxTotal}{maxTotal > 0 ? ` (${Math.round((currentTotal / maxTotal) * 100)}%)` : ""}</p>
+                      </div>
+                    )}
                     <button onClick={handleClear} className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors" title={t("clearRecord")}><Trash2 className="w-4 h-4" /></button>
                     <Button size="sm" onClick={handleSave} disabled={!dirty} className="gap-1.5 h-8 text-xs"><Save className="w-3.5 h-3.5" />{t("save")}</Button>
                   </div>
                 </div>
 
                 {/* Score cards */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 relative">
+                  {isAbsent && (
+                    <div className="absolute inset-0 z-10 flex items-center justify-center bg-orange-50/90 backdrop-blur-sm">
+                      <div className="text-center">
+                        <p className="text-4xl font-black text-orange-500 tracking-widest">ABS</p>
+                        <p className="text-sm text-orange-400 mt-1">{lang === "zh" ? "學生缺席，不計入成績" : "Student absent — excluded from analysis"}</p>
+                        <button onClick={() => { setIsAbsent(false); setDirty(true); }} className="mt-3 text-xs text-orange-500 underline hover:text-orange-700">
+                          {lang === "zh" ? "取消缺席" : "Remove ABS"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   {groups.map((group, gi) => {
                     // Compute section earned / max
                     const sectionMax = group.questions.reduce((s, q) => s + (q.maxMark || 0), 0);

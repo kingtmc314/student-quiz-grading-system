@@ -136,7 +136,7 @@ export async function loadFullState(): Promise<FullAppState | null> {
       teachersRes, naturesRes, subjectsRes, topicsRes,
       wsRes, weRes, syllabusRes,
       yearsRes, ysRes, classesRes, studentsRes,
-      asmtsRes, atRes, msRes, scoresRes,
+      asmtsRes, atRes, msRes, scoresRes, absentRes,
     ] = await Promise.all([
       supabase.from('sqgs_teachers').select('*').order('name'),
       supabase.from('sqgs_assessment_natures').select('*').order('name'),
@@ -153,11 +153,12 @@ export async function loadFullState(): Promise<FullAppState | null> {
       supabase.from('sqgs_assessment_topics').select('*'),
       supabase.from('sqgs_mark_sheet_items').select('*').order('sort_order'),
       supabase.from('sqgs_scores').select('*'),
+      supabase.from('sqgs_absent_flags').select('*'),
     ]);
 
     // Check for errors
     const errors = [teachersRes, naturesRes, subjectsRes, topicsRes, wsRes, weRes,
-      syllabusRes, yearsRes, ysRes, classesRes, studentsRes, asmtsRes, atRes, msRes, scoresRes]
+      syllabusRes, yearsRes, ysRes, classesRes, studentsRes, asmtsRes, atRes, msRes, scoresRes, absentRes]
       .filter(r => r.error);
     if (errors.length > 0) {
       console.error('Supabase load errors:', errors.map(r => r.error));
@@ -179,6 +180,7 @@ export async function loadFullState(): Promise<FullAppState | null> {
     const dbAT = (atRes.data ?? []) as DbAssessmentTopic[];
     const dbMS = (msRes.data ?? []) as DbMarkSheetItem[];
     const dbScores = (scoresRes.data ?? []) as DbScore[];
+    const dbAbsent = (absentRes.data ?? []) as { assessment_id: string; student_id: string }[];
 
     // Build teachers
     const teachers: Teacher[] = dbTeachers.map(dbToTeacher);
@@ -229,6 +231,15 @@ export async function loadFullState(): Promise<FullAppState | null> {
         byStudent.set(sc.student_id, { studentId: sc.student_id, scores: {} });
       }
       byStudent.get(sc.student_id)!.scores[sc.mark_item_id] = sc.value ?? null;
+    }
+    // Mark absent students
+    for (const ab of dbAbsent) {
+      if (!scoresMap.has(ab.assessment_id)) scoresMap.set(ab.assessment_id, new Map());
+      const byStudent = scoresMap.get(ab.assessment_id)!;
+      if (!byStudent.has(ab.student_id)) {
+        byStudent.set(ab.student_id, { studentId: ab.student_id, scores: {} });
+      }
+      byStudent.get(ab.student_id)!.isAbsent = true;
     }
 
     // Build assessment topics map: assessmentId → topicIds[]
@@ -603,6 +614,24 @@ export async function deleteScoreDb(assessmentId: string, studentId: string) {
     .eq('assessment_id', assessmentId)
     .eq('student_id', studentId);
   if (error) console.error('deleteScore error:', error);
+}
+
+/** Mark a student as absent for an assessment */
+export async function upsertAbsentFlagDb(assessmentId: string, studentId: string) {
+  const { error } = await supabase
+    .from('sqgs_absent_flags')
+    .upsert({ assessment_id: assessmentId, student_id: studentId }, { onConflict: 'assessment_id,student_id' });
+  if (error) console.error('upsertAbsentFlag error:', error);
+}
+
+/** Remove absent flag for a student in an assessment */
+export async function deleteAbsentFlagDb(assessmentId: string, studentId: string) {
+  const { error } = await supabase
+    .from('sqgs_absent_flags')
+    .delete()
+    .eq('assessment_id', assessmentId)
+    .eq('student_id', studentId);
+  if (error) console.error('deleteAbsentFlag error:', error);
 }
 
 // ─── Full state save (used for initial seed / backup restore) ─────────────────

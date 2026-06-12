@@ -30,6 +30,7 @@ import {
   saveAssessment, deleteAssessmentDb,
   saveMarkSheet,
   upsertScoreDb, deleteScoreDb,
+  upsertAbsentFlagDb, deleteAbsentFlagDb,
 } from "@/lib/supabase";
 
 // ─── Persistence helpers (localStorage fallback) ──────────────────────────────
@@ -147,6 +148,7 @@ export interface MarkItem {
 export interface ScoreEntry {
   studentId: string;
   scores: Record<string, number | null>;
+  isAbsent?: boolean;
   submittedAt?: string;
 }
 
@@ -837,7 +839,15 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         { ...entry, submittedAt: new Date().toISOString() },
       ],
     }));
-    upsertScoreDb(assessmentId, entry).catch(console.error);
+    // Handle absent flag separately
+    if (entry.isAbsent) {
+      upsertAbsentFlagDb(assessmentId, entry.studentId).catch(console.error);
+      // Also delete any existing scores for this student
+      deleteScoreDb(assessmentId, entry.studentId).catch(console.error);
+    } else {
+      deleteAbsentFlagDb(assessmentId, entry.studentId).catch(console.error);
+      upsertScoreDb(assessmentId, entry).catch(console.error);
+    }
   }, [mutateAssessment]);
 
   const deleteScore = useCallback((
