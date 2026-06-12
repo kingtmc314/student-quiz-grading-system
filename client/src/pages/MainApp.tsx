@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.3.4";
+const APP_VERSION = "v1.3.5";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -2667,7 +2667,15 @@ function SettingsTab() {
     });
     const examPercentage = examEntries.reduce((s, e) => s + e.percentage, 0);
     if (editWeightingId) {
-      updateWeightingScheme(editWeightingId, { label: weightingForm.label.trim(), caEntries, examPercentage });
+      updateWeightingScheme(editWeightingId, {
+        label: weightingForm.label.trim(),
+        form: weightingForm.forms[0] ?? "",
+        subjectId: weightingForm.subjectIds[0] ?? "",
+        forms: weightingForm.forms,
+        subjectIds: weightingForm.subjectIds,
+        caEntries,
+        examPercentage,
+      });
     } else {
       addWeightingScheme({ label: weightingForm.label.trim(), form: weightingForm.forms[0] ?? "", subjectId: weightingForm.subjectIds[0] ?? "", forms: weightingForm.forms, subjectIds: weightingForm.subjectIds, caEntries, examPercentage });
     }
@@ -3280,10 +3288,8 @@ function SettingsTab() {
                         {(() => {
                           const total = weightingEntries.reduce((s, e) => s + e.percentage, 0);
                           return (
-                            <span className={`font-bold text-sm ${
-                              total === 100 ? "text-green-600" : total > 100 ? "text-red-600" : "text-amber-600"
-                            }`}>
-                              {total}%{total !== 100 && ` (${lang === "zh" ? "應為100%" : "should be 100%"})`}
+                            <span className="font-bold text-sm text-slate-700">
+                              {total}%
                             </span>
                           );
                         })()}
