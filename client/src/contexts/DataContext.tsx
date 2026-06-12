@@ -414,8 +414,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setSyncStatus('loading');
     loadFullState().then(remote => {
-      if (!remote) {
-        // No remote data — seed the DB with local/seed data
+      // Detect empty remote DB: loadFullState returns a valid object even when all tables are empty.
+      // We treat it as "needs seeding" if there are no school years AND no subjects AND no teachers.
+      const remoteIsEmpty = !remote ||
+        (remote.teachers.length === 0 && remote.subjects.length === 0 && remote.schoolYears.length === 0);
+
+      if (remoteIsEmpty) {
+        // Push local/seed data up to Supabase
         setSyncStatus('saving');
         const seedData = {
           teachers: localData?.teachers ?? SEED_TEACHERS,
@@ -425,6 +430,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           schoolYears: localData?.schoolYears ?? SEED_YEARS,
           syllabusItems: localData?.syllabusItems ?? [],
         };
+        // Apply locally first so UI is immediately responsive
+        setTeachers(seedData.teachers);
+        setNatures(seedData.natures);
+        setWeightingSchemes(seedData.weightingSchemes);
+        setSubjects(seedData.subjects);
+        setSchoolYears(seedData.schoolYears);
+        setSyllabusItemsState(seedData.syllabusItems);
         saveFullState(seedData).then(() => {
           setSyncStatus('idle');
         }).catch(() => setSyncStatus('error'));

@@ -13,7 +13,7 @@ import {
   GraduationCap, Languages, Save, ChevronDown, ChevronRight, Plus, Trash2,
   BookOpen, Menu, X, Pencil, Check, Upload, FileEdit, Tag, Wand2, FileText,
   ArrowUp, ArrowDown, ChevronLeft, Printer, TrendingUp, TrendingDown, Minus,
-  Download, Copy, BarChart2, Tags, CalendarDays, ArrowRight,
+  Download, Copy, BarChart2, Tags, CalendarDays, ArrowRight, Cloud,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useData } from "@/contexts/DataContext";
@@ -887,7 +887,7 @@ function GradingTab({
 
       {/* Mark Sheet Editor Dialog */}
       <Dialog open={showMarkSheet} onOpenChange={setShowMarkSheet}>
-        <DialogContent className="w-full max-w-5xl max-h-[90vh] flex flex-col">
+        <DialogContent className="w-[95vw] max-w-6xl h-[92vh] flex flex-col">
           <DialogHeader><DialogTitle>{t("editMarkSheet")} — {assessTitle}</DialogTitle></DialogHeader>
         <div className="flex-1 overflow-y-auto overflow-x-auto">
           <MarkSheetEditor
@@ -952,7 +952,7 @@ function MarkSheetEditorDialog({
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="w-full max-w-5xl max-h-[90vh] flex flex-col">
+      <DialogContent className="w-[95vw] max-w-6xl h-[92vh] flex flex-col">
         <DialogHeader><DialogTitle>{t("editMarkSheet")} — {assessTitle}</DialogTitle></DialogHeader>
         <div className="flex-1 overflow-y-auto overflow-x-auto">
           <MarkSheetEditor items={items} setItems={setItems} topics={topics} lang={lang} parseText={parseText} setParseText={setParseText} quickCount={quickCount} setQuickCount={setQuickCount} msTab={activeTab} setMsTab={setActiveTab} t={t as (k: string) => string} />
@@ -1030,7 +1030,7 @@ function MarkSheetEditor({
       <TabsContent value="editor">
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="overflow-x-auto">
-          <div className={`grid gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase tracking-wide text-slate-500 ${topics.length > 0 ? "min-w-[820px] grid-cols-[2rem_1fr_6rem_minmax(0,1fr)_6rem_2rem_2rem]" : "min-w-[480px] grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"}`}>
+          <div className={`grid gap-3 px-4 py-3 bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase tracking-wide text-slate-500 ${topics.length > 0 ? "min-w-[900px] grid-cols-[2.5rem_1fr_7rem_minmax(0,1fr)_7rem_2.5rem_2.5rem]" : "min-w-[520px] grid-cols-[2.5rem_1fr_7rem_7rem_2.5rem_2.5rem]"}`}>
             <span>#</span><span>{t("label")}</span><span className="text-center">{t("maxMark")}</span>
             {topics.length > 0 && <span className="flex items-center gap-1"><Tag className="w-3 h-3" />{t("topicTag")}</span>}
             <span className="text-center">Section?</span><span></span><span></span>
@@ -1039,16 +1039,16 @@ function MarkSheetEditor({
             <div className="py-8 text-center text-slate-400 text-sm">{t("noData")}</div>
           ) : (
             items.map((item, idx) => (
-              <div key={item.id} className={`grid gap-2 px-3 py-1.5 items-center border-b border-slate-100 last:border-0 ${topics.length > 0 ? "min-w-[820px] grid-cols-[2rem_1fr_6rem_minmax(0,1fr)_6rem_2rem_2rem]" : "min-w-[480px] grid-cols-[2rem_1fr_6rem_6rem_2rem_2rem]"} ${item.isSection ? "bg-blue-50" : idx % 2 === 0 ? "bg-white" : "bg-slate-50/50"}`}>
+              <div key={item.id} className={`grid gap-3 px-4 py-2 items-center border-b border-slate-100 last:border-0 ${topics.length > 0 ? "min-w-[900px] grid-cols-[2.5rem_1fr_7rem_minmax(0,1fr)_7rem_2.5rem_2.5rem]" : "min-w-[520px] grid-cols-[2.5rem_1fr_7rem_7rem_2.5rem_2.5rem]"} ${item.isSection ? "bg-blue-50" : idx % 2 === 0 ? "bg-white" : "bg-slate-50/50"}`}>
                 <span className="text-xs text-slate-400 font-mono text-center">{idx + 1}</span>
-                <Input value={item.label} onChange={e => updateItem(item.id, "label", e.target.value)} className={`h-7 text-sm font-mono ${item.isSection ? "font-bold bg-blue-50 text-blue-700" : ""}`} placeholder={item.isSection ? "Section A" : "2(a)"} />
-                <Input type="number" min={0} value={item.isSection ? "" : item.maxMark} onChange={e => updateItem(item.id, "maxMark", parseFloat(e.target.value) || 0)} disabled={item.isSection} className="h-7 text-sm font-mono text-center" placeholder="0" />
+                <Input value={item.label} onChange={e => updateItem(item.id, "label", e.target.value)} className={`h-9 text-sm font-mono ${item.isSection ? "font-bold bg-blue-50 text-blue-700" : ""}`} placeholder={item.isSection ? "Section A" : "2(a)"} />
+                <Input type="number" min={0} value={item.isSection ? "" : item.maxMark} onChange={e => updateItem(item.id, "maxMark", parseFloat(e.target.value) || 0)} disabled={item.isSection} className="h-9 text-sm font-mono text-center" placeholder="0" />
                 {topics.length > 0 && (() => {
                   const hasSyllabus = topics.some(tp => tp.learningObjective);
                   if (!hasSyllabus) {
                     return (
                       <Select value={item.topicId ?? "none"} onValueChange={v => updateItem(item.id, "topicId", v === "none" ? undefined : v)} disabled={item.isSection}>
-                        <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
+                        <SelectTrigger className="h-9 text-sm"><SelectValue placeholder="—" /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="none">—</SelectItem>
                           {topics.map(tp => <SelectItem key={tp.id} value={tp.id}>{lang === "zh" && tp.nameCht ? tp.nameCht : tp.name}</SelectItem>)}
@@ -1076,7 +1076,7 @@ function MarkSheetEditor({
                         }}
                         disabled={item.isSection}
                       >
-                        <SelectTrigger className="h-7 text-xs w-24 shrink-0">
+                        <SelectTrigger className="h-9 text-sm w-28 shrink-0">
                           <SelectValue placeholder={lang === "zh" ? "級別" : "Level"} />
                         </SelectTrigger>
                         <SelectContent>
@@ -1094,7 +1094,7 @@ function MarkSheetEditor({
                           }}
                           disabled={item.isSection}
                         >
-                          <SelectTrigger className="h-7 text-xs w-44 shrink-0">
+                          <SelectTrigger className="h-9 text-sm w-48 shrink-0">
                             <SelectValue placeholder={lang === "zh" ? "學習單元" : "Unit"} />
                           </SelectTrigger>
                           <SelectContent>
@@ -1112,7 +1112,7 @@ function MarkSheetEditor({
                           }}
                           disabled={item.isSection}
                         >
-                          <SelectTrigger className="h-7 text-xs flex-1 min-w-0">
+                          <SelectTrigger className="h-9 text-sm flex-1 min-w-0">
                             <SelectValue placeholder={lang === "zh" ? "學習目標" : "Objective"} />
                           </SelectTrigger>
                           <SelectContent className="max-w-sm">
@@ -1136,8 +1136,8 @@ function MarkSheetEditor({
           )}
           <div className="px-3 py-2 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
             <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={() => addRow(false)} className="gap-1 text-xs h-7"><Plus className="w-3.5 h-3.5" />{t("questionRow")}</Button>
-              <Button size="sm" variant="outline" onClick={() => addRow(true)} className="gap-1 text-xs h-7"><Plus className="w-3.5 h-3.5" />{t("sectionRow")}</Button>
+              <Button size="sm" variant="outline" onClick={() => addRow(false)} className="gap-1 text-xs h-8"><Plus className="w-3.5 h-3.5" />{t("questionRow")}</Button>
+              <Button size="sm" variant="outline" onClick={() => addRow(true)} className="gap-1 text-xs h-8"><Plus className="w-3.5 h-3.5" />{t("sectionRow")}</Button>
             </div>
             <span className="text-xs font-mono font-bold text-slate-600">{t("total")}: {maxTotal}</span>
           </div>
@@ -2467,10 +2467,24 @@ function SettingsTab() {
 
 // ─── Tab: Data Backup ─────────────────────────────────────────────────────────
 function BackupTab() {
-  const { teachers, natures, weightingSchemes, subjects, schoolYears } = useData();
+  const { teachers, natures, weightingSchemes, subjects, schoolYears, syllabusItems, exportData, importData, syncStatus } = useData();
   const { t, lang } = useI18n();
   const [importText, setImportText] = useState("");
   const [showImportConfirm, setShowImportConfirm] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const handleSyncToCloud = async () => {
+    setIsSyncing(true);
+    try {
+      const { saveFullState } = await import("@/lib/supabase");
+      await saveFullState({ teachers, natures, weightingSchemes, subjects, schoolYears, syllabusItems });
+      toast.success(lang === "zh" ? "已同步到雲端 ✓" : "Synced to cloud ✓");
+    } catch {
+      toast.error(lang === "zh" ? "同步失敗，請重試" : "Sync failed, please try again");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   const handleExport = () => {
     const data = { teachers, natures, weightingSchemes, subjects, schoolYears };
@@ -2493,16 +2507,11 @@ function BackupTab() {
         toast.error(lang === "zh" ? "JSON 格式無效" : "Invalid JSON structure");
         return;
       }
-      // Save to localStorage immediately
-      localStorage.setItem("sqgs_data_v1", JSON.stringify(parsed));
-      // Also save to Supabase cloud
-      const { saveAppState } = await import("@/lib/supabase");
-      await saveAppState(parsed as Record<string, unknown>);
       setImportText("");
       setShowImportConfirm(false);
+      // Use DataContext importData which pushes to relational Supabase tables
+      await importData(parsed);
       toast.success(t("parseSuccess"));
-      // Reload to re-initialise DataContext from the restored data
-      setTimeout(() => window.location.reload(), 800);
     } catch {
       toast.error(t("parseError"));
     }
@@ -2521,6 +2530,21 @@ function BackupTab() {
       <h2 className="text-xl font-bold text-slate-800">{lang === "zh" ? "數據備份" : "Data Backup"}</h2>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Sync to Cloud */}
+        <div className="bg-white rounded-xl border border-blue-200 p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center"><Cloud className="w-5 h-5 text-blue-600" /></div>
+            <div>
+              <h3 className="font-bold text-slate-800">{lang === "zh" ? "同步到雲端" : "Sync to Cloud"}</h3>
+              <p className="text-xs text-slate-500">{lang === "zh" ? "將本機數據推送到 Supabase 雲端資料庫" : "Push local data to Supabase cloud database"}</p>
+            </div>
+          </div>
+          <Button onClick={handleSyncToCloud} disabled={isSyncing} className="w-full gap-2 bg-blue-600 hover:bg-blue-700">
+            {isSyncing ? <><span className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />{lang === "zh" ? "同步中…" : "Syncing…"}</> : <><Cloud className="w-4 h-4" />{lang === "zh" ? "立即同步" : "Sync Now"}</>}
+          </Button>
+          <p className="text-xs text-slate-400 mt-2 text-center">{lang === "zh" ? `狀態: ${syncStatus}` : `Status: ${syncStatus}`}</p>
+        </div>
+
         {/* Export */}
         <div className="bg-white rounded-xl border border-slate-200 p-6">
           <div className="flex items-center gap-3 mb-4">
