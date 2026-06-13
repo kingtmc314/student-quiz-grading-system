@@ -129,9 +129,38 @@ export interface FullAppState {
   syllabusItems: SyllabusItem[];
 }
 
+/**
+ * Paginated fetch helper — Supabase default limit is 1000 rows.
+ * This fetches ALL rows from a table by paginating in chunks.
+ */
+async function fetchAllRows<T>(table: string, orderCol?: string, ascending = true): Promise<{ data: T[]; error: any }> {
+  const PAGE_SIZE = 1000;
+  let allData: T[] = [];
+  let from = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let query = supabase.from(table).select('*').range(from, from + PAGE_SIZE - 1);
+    if (orderCol) query = query.order(orderCol, { ascending });
+    const { data, error } = await query;
+    if (error) return { data: [], error };
+    if (!data || data.length === 0) {
+      hasMore = false;
+    } else {
+      allData = allData.concat(data as T[]);
+      if (data.length < PAGE_SIZE) {
+        hasMore = false;
+      } else {
+        from += PAGE_SIZE;
+      }
+    }
+  }
+  return { data: allData, error: null };
+}
+
 export async function loadFullState(): Promise<FullAppState | null> {
   try {
-    // Fetch all tables in parallel
+    // Fetch all tables in parallel — use paginated fetch for large tables
     const [
       teachersRes, naturesRes, subjectsRes, topicsRes,
       wsRes, weRes, syllabusRes,
@@ -151,8 +180,8 @@ export async function loadFullState(): Promise<FullAppState | null> {
       supabase.from('sqgs_students').select('*').order('class_no'),
       supabase.from('sqgs_assessments').select('*').order('date'),
       supabase.from('sqgs_assessment_topics').select('*'),
-      supabase.from('sqgs_mark_sheet_items').select('*').order('sort_order'),
-      supabase.from('sqgs_scores').select('*'),
+      fetchAllRows<DbMarkSheetItem>('sqgs_mark_sheet_items', 'sort_order'),
+      fetchAllRows<DbScore>('sqgs_scores'),
       supabase.from('sqgs_absent_flags').select('*'),
     ]);
 
