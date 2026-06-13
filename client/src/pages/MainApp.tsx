@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.3.7";
+const APP_VERSION = "v1.3.8";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -2786,16 +2786,13 @@ function SettingsTab() {
 
   const handleSaveWeighting = () => {
     if (!weightingForm.label.trim()) { toast.error(t("validationError")); return; }
-    // Separate CA entries from exam entries
-    const caEntries = weightingEntries.filter(e => {
-      const nat = natures.find(n => n.id === e.natureId);
-      return nat && !nat.isExam;
-    });
-    const examEntries = weightingEntries.filter(e => {
+    // Store ALL nature entries (CA + Exam) in caEntries for per-nature lookup
+    const caEntries = weightingEntries;
+    // examPercentage = sum of exam nature percentages (for backward compat)
+    const examPercentage = weightingEntries.filter(e => {
       const nat = natures.find(n => n.id === e.natureId);
       return nat && nat.isExam;
-    });
-    const examPercentage = examEntries.reduce((s, e) => s + e.percentage, 0);
+    }).reduce((s, e) => s + e.percentage, 0);
     if (editWeightingId) {
       updateWeightingScheme(editWeightingId, {
         label: weightingForm.label.trim(),
@@ -2951,17 +2948,15 @@ function SettingsTab() {
                     <button onClick={() => {
                       setEditWeightingId(ws.id);
                       setWeightingForm({ label: ws.label, forms: ws.forms ?? (ws.form ? [ws.form] : ["S6"]), subjectIds: ws.subjectIds ?? (ws.subjectId ? [ws.subjectId] : []), examPercentage: ws.examPercentage });
-                      // Build entries: CA entries from scheme + exam entries from natures
+                      // Build entries: all natures, look up from caEntries first (covers both CA and Exam)
                       const allEntries = natures.map(n => {
-                        if (n.isExam) {
-                          // Find if this exam nature has its own entry or use combined examPercentage
-                          const examNatures = natures.filter(x => x.isExam);
-                          const pct = examNatures.length === 1 ? ws.examPercentage : 0;
-                          return { natureId: n.id, percentage: pct };
-                        } else {
-                          const existing = ws.caEntries.find(e => e.natureId === n.id);
-                          return { natureId: n.id, percentage: existing?.percentage ?? 0 };
+                        const existing = ws.caEntries.find(e => e.natureId === n.id);
+                        if (existing) return { natureId: n.id, percentage: existing.percentage };
+                        // Fallback for single exam nature using legacy examPercentage
+                        if (n.isExam && natures.filter(x => x.isExam).length === 1) {
+                          return { natureId: n.id, percentage: ws.examPercentage };
                         }
+                        return { natureId: n.id, percentage: 0 };
                       });
                       setWeightingEntries(allEntries);
                       setShowAddWeighting(true);
