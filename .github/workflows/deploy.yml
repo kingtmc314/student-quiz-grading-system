@@ -31,11 +31,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build
-        env:
-          GITHUB_PAGES: "true"
-          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
-        run: pnpm build
+        run: GITHUB_PAGES=true pnpm build
 
       - name: Copy index.html for SPA routing
         run: cp dist/public/index.html dist/public/404.html
