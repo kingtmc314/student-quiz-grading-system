@@ -247,7 +247,7 @@ interface DataContextType {
 
   updateMarkSheet: (yearId: string, subjectId: string, classId: string, assessmentId: string, items: MarkItem[]) => void;
 
-  upsertScore: (yearId: string, subjectId: string, classId: string, assessmentId: string, entry: ScoreEntry) => void;
+  upsertScore: (yearId: string, subjectId: string, classId: string, assessmentId: string, entry: ScoreEntry) => Promise<void>;
   deleteScore: (yearId: string, subjectId: string, classId: string, assessmentId: string, studentId: string) => void;
 
   getSchoolYear: (yearId: string) => SchoolYear | undefined;
@@ -835,7 +835,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   // ── Scores ────────────────────────────────────────────────────────────────
 
-  const upsertScore = useCallback((
+  const upsertScore = useCallback(async (
     yearId: string, subjectId: string, classId: string, assessmentId: string,
     entry: ScoreEntry
   ) => {
@@ -848,12 +848,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     }));
     // Handle absent flag separately
     if (entry.isAbsent) {
-      upsertAbsentFlagDb(assessmentId, entry.studentId).catch(console.error);
-      // Also delete any existing scores for this student
-      deleteScoreDb(assessmentId, entry.studentId).catch(console.error);
+      await upsertAbsentFlagDb(assessmentId, entry.studentId);
+      await deleteScoreDb(assessmentId, entry.studentId);
     } else {
-      deleteAbsentFlagDb(assessmentId, entry.studentId).catch(console.error);
-      upsertScoreDb(assessmentId, entry).catch(console.error);
+      await deleteAbsentFlagDb(assessmentId, entry.studentId);
+      await upsertScoreDb(assessmentId, entry);
     }
   }, [mutateAssessment]);
 

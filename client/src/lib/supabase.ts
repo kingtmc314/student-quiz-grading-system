@@ -578,9 +578,30 @@ export async function saveMarkSheet(assessmentId: string, items: MarkItem[]) {
   }
 }
 
-/** Save a student's scores for an assessment (delete-then-insert for reliability) */
+// ─── Score Save Queue (prevents race conditions) ────────────────────────────
+const scoreQueue = new Map<string, Promise<void>>();
+
+function getQueueKey(assessmentId: string, studentId: string) {
+  return `${assessmentId}::${studentId}`;
+}
+
+/** Listeners for save status changes */
+type SaveStatusListener = (status: 'saving' | 'saved' | 'error', detail?: string) => void;
+let saveStatusListener: SaveStatusListener | null = null;
+export function onSaveStatus(listener: SaveStatusListener | null) { saveStatusListener = listener; }
+
+/** Save a student's scores for an assessment (queued, with retry) */
 export async function upsertScoreDb(assessmentId: string, entry: ScoreEntry) {
-  console.log('[upsertScoreDb] called', { assessmentId, studentId: entry.studentId, scoresType: Array.isArray(entry.scores) ? 'ARRAY(bug)' : 'object(ok)', scoreKeys: Object.keys(entry.scores).slice(0,3) });
+  const key = getQueueKey(assessmentId, entry.studentId);
+  // Chain onto existing queue for this student+assessment to prevent overlap
+  const prev = scoreQueue.get(key) ?? Promise.resolve();
+  const task = prev.then(() => doUpsertScore(assessmentId, entry));
+  scoreQueue.set(key, task.catch(() => {})); // keep queue alive even on error
+  return task;
+}
+
+async function doUpsertScore(assessmentId: string, entry: ScoreEntry, retries = 2): Promise<void> {
+  saveStatusListener?.('saving');
   const rows = Object.entries(entry.scores)
     .filter(([, value]) => value !== null && value !== undefined)
     .map(([markItemId, value]) => ({
@@ -589,22 +610,48 @@ export async function upsertScoreDb(assessmentId: string, entry: ScoreEntry) {
       mark_item_id: markItemId,
       value: value,
     }));
-  console.log('[upsertScoreDb] rows to insert:', rows.length, rows.slice(0,2));
-  // Delete existing scores for this student+assessment, then re-insert
+
+  // Step 1: Delete existing scores
   const { error: delError } = await supabase
     .from('sqgs_scores')
     .delete()
     .eq('assessment_id', assessmentId)
     .eq('student_id', entry.studentId);
-  if (delError) { console.error('upsertScore delete error:', delError); return; }
-  if (rows.length === 0) { console.warn('[upsertScoreDb] no rows to insert'); return; }
+  if (delError) {
+    console.error('[upsertScoreDb] delete error:', delError);
+    if (retries > 0) {
+      await delay(500);
+      return doUpsertScore(assessmentId, entry, retries - 1);
+    }
+    saveStatusListener?.('error', `Delete failed: ${delError.message}`);
+    return;
+  }
+
+  // Step 2: Insert new scores
+  if (rows.length === 0) {
+    console.log('[upsertScoreDb] no rows to insert (cleared)');
+    saveStatusListener?.('saved');
+    return;
+  }
   const { error, data } = await supabase
     .from('sqgs_scores')
     .insert(rows)
     .select();
-  if (error) console.error('upsertScore insert error:', error);
-  else console.log('[upsertScoreDb] inserted OK:', data?.length, 'rows');
+  if (error) {
+    console.error('[upsertScoreDb] insert error:', error);
+    if (retries > 0) {
+      // Re-try the full operation (delete + insert)
+      await delay(500);
+      return doUpsertScore(assessmentId, entry, retries - 1);
+    }
+    saveStatusListener?.('error', `Insert failed: ${error.message}`);
+    return;
+  }
+  console.log('[upsertScoreDb] OK:', data?.length, 'rows');
+  saveStatusListener?.('saved');
 }
+
+function delay(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
 /** Delete all scores for a student in an assessment */
 export async function deleteScoreDb(assessmentId: string, studentId: string) {

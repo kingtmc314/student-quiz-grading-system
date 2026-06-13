@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.3.8";
+const APP_VERSION = "v1.3.9";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -819,20 +819,28 @@ function GradingTab({
     setDirty(true);
   };
 
-  const handleSave = () => {
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleSave = async () => {
     if (!selectedStudentId || !yearId || !subjectId || !classId || !assessmentId) return;
-    if (isAbsent) {
-      upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: {}, isAbsent: true });
-    } else {
-      // Build scores as Record<markItemId, value> as expected by ScoreEntry
-      const scoresRecord: Record<string, number | null> = {};
-      questions.forEach(q => {
-        scoresRecord[q.id] = typeof draftScores[q.id] === "number" ? (draftScores[q.id] as number) : 0;
-      });
-      upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: scoresRecord, isAbsent: false });
+    setIsSaving(true);
+    try {
+      if (isAbsent) {
+        await upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: {}, isAbsent: true });
+      } else {
+        const scoresRecord: Record<string, number | null> = {};
+        questions.forEach(q => {
+          scoresRecord[q.id] = typeof draftScores[q.id] === "number" ? (draftScores[q.id] as number) : 0;
+        });
+        await upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: scoresRecord, isAbsent: false });
+      }
+      setDirty(false);
+      toast.success(t("saved"));
+    } catch (err: any) {
+      toast.error(lang === "zh" ? `儲存失敗: ${err?.message || "未知錯誤"}` : `Save failed: ${err?.message || "Unknown error"}`);
+    } finally {
+      setIsSaving(false);
     }
-    setDirty(false);
-    toast.success(t("saved"));
   };
 
   const handleAutoSave = () => { if (dirty) handleSave(); };
@@ -846,8 +854,8 @@ function GradingTab({
     toast.success(t("deleted"));
   };
 
-  const navigateStudent = (dir: -1 | 1) => {
-    if (dirty) handleSave();
+  const navigateStudent = async (dir: -1 | 1) => {
+    if (dirty) await handleSave();
     if (!selectedStudentId) { setSelectedStudentId(sortedStudents[0]?.id ?? null); return; }
     const idx = sortedStudents.findIndex(s => s.id === selectedStudentId);
     const next = sortedStudents[idx + dir];
@@ -1042,7 +1050,7 @@ function GradingTab({
                       </div>
                     )}
                     <button onClick={handleClear} className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors" title={t("clearRecord")}><Trash2 className="w-4 h-4" /></button>
-                    <Button size="sm" onClick={handleSave} disabled={!dirty} className="gap-1.5 h-8 text-xs"><Save className="w-3.5 h-3.5" />{t("save")}</Button>
+                    <Button size="sm" onClick={handleSave} disabled={!dirty && !isSaving} className="gap-1.5 h-8 text-xs">{isSaving ? <><span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />{lang === "zh" ? "儲存中..." : "Saving..."}</> : <><Save className="w-3.5 h-3.5" />{t("save")}</>}</Button>
                   </div>
                 </div>
 
