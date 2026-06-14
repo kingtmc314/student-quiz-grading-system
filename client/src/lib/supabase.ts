@@ -606,20 +606,43 @@ export async function deleteAssessmentDb(id: string) {
   if (error) console.error('deleteAssessment error:', error);
 }
 
-/** Save mark sheet items for an assessment (replace all) */
+/** Save mark sheet items for an assessment (safe upsert: only removes items no longer present) */
 export async function saveMarkSheet(assessmentId: string, items: MarkItem[]) {
-  await supabase.from('sqgs_mark_sheet_items').delete().eq('assessment_id', assessmentId);
-  if (items.length > 0) {
-    const { error } = await supabase
-      .from('sqgs_mark_sheet_items')
-      .insert(items.map((item, idx) => ({
+  if (items.length === 0) {
+    // Only delete if explicitly clearing - use a separate clearMarkSheet function for that
+    return;
+  }
+  // Step 1: Upsert all current items (safe - never loses data on network failure)
+  const { error: upsertError } = await supabase
+    .from('sqgs_mark_sheet_items')
+    .upsert(
+      items.map((item, idx) => ({
         id: item.id, assessment_id: assessmentId,
         label: item.label, max_mark: item.maxMark,
         is_section: item.isSection, topic_id: item.topicId || null,
         sort_order: idx,
-      })));
-    if (error) console.error('saveMarkSheet error:', error);
+      })),
+      { onConflict: 'id' }
+    );
+  if (upsertError) { console.error('saveMarkSheet upsert error:', upsertError); return; }
+
+  // Step 2: Remove items that are no longer in the list (only after upsert succeeds)
+  const currentIds = items.map(i => i.id);
+  const { data: existingItems } = await supabase
+    .from('sqgs_mark_sheet_items')
+    .select('id')
+    .eq('assessment_id', assessmentId);
+  if (existingItems) {
+    const toDelete = existingItems.filter(r => !currentIds.includes(r.id)).map(r => r.id);
+    if (toDelete.length > 0) {
+      await supabase.from('sqgs_mark_sheet_items').delete().in('id', toDelete);
+    }
   }
+}
+
+/** Clear all mark sheet items for an assessment (destructive - use with caution) */
+export async function clearMarkSheet(assessmentId: string) {
+  await supabase.from('sqgs_mark_sheet_items').delete().eq('assessment_id', assessmentId);
 }
 
 // ─── Score Save Queue (prevents race conditions) ────────────────────────────

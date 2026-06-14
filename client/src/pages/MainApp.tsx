@@ -13,7 +13,7 @@ import {
   GraduationCap, Languages, Save, ChevronDown, ChevronRight, Plus, Trash2,
   BookOpen, Menu, X, Pencil, Check, Upload, FileEdit, Tag, Wand2, FileText,
   ArrowUp, ArrowDown, ChevronLeft, Printer, TrendingUp, TrendingDown, Minus,
-  Download, Copy, BarChart2, Tags, CalendarDays, ArrowRight, Cloud, ClipboardPaste,
+  Download, Copy, BarChart2, Tags, CalendarDays, ArrowRight, Cloud, ClipboardPaste, FileSpreadsheet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useData } from "@/contexts/DataContext";
@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.8.0";
+const APP_VERSION = "v1.9.0";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -1927,7 +1927,7 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
 
 // ─── Tab: Summary Table ───────────────────────────────────────────────────────
 function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId: string; classId: string }) {
-  const { getSchoolYear, getSubject, getClass, getNature, getWeightingScheme } = useData();
+  const { getSchoolYear, getSubject, getClass, getNature, getWeightingScheme, getGlobalSubject } = useData();
   const { t, lang } = useI18n();
 
   const year = yearId ? getSchoolYear(yearId) : undefined;
@@ -2920,6 +2920,13 @@ function SettingsTab() {
   };
 
   const handleClearSyllabus = () => {
+    const subjectName = syllabusSubjectId
+      ? (subjects.find(s => s.id === syllabusSubjectId)?.name ?? syllabusSubjectId)
+      : (lang === "zh" ? "所有科目" : "all subjects");
+    const confirmMsg = lang === "zh"
+      ? `確定要清除「${subjectName}」的所有課程大綱嗎？此操作不可撤銷。`
+      : `Are you sure you want to clear the syllabus for "${subjectName}"? This cannot be undone.`;
+    if (!window.confirm(confirmMsg)) return;
     setSyllabusItems([]);
     setSyllabusPreview([]);
     toast.success(lang === "zh" ? "課程大綱已清除" : "Syllabus cleared");
@@ -3697,6 +3704,65 @@ function BackupTab() {
     toast.success(t("saved"));
   };
 
+  const handleExportScoresCSV = () => {
+    // Build CSV: one sheet per assessment, all in one file with sections
+    const rows: string[] = [];
+    const esc = (v: string | number | null | undefined) => {
+      const s = String(v ?? "");
+      return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    let hasData = false;
+    for (const year of schoolYears) {
+      for (const ys of year.subjects) {
+        const subj = subjects.find(s => s.id === ys.subjectId);
+        for (const cls of ys.classes) {
+          for (const asmt of cls.assessments) {
+            if (asmt.markSheet.length === 0 && asmt.scores.length === 0) continue;
+            hasData = true;
+            // Section header
+            rows.push("");
+            rows.push(`=== ${esc(year.label)} | ${esc(subj?.name ?? ys.subjectId)} | ${esc(cls.name)} | ${esc(asmt.title)} ===`);
+            // Column headers: Class No, Name, then each mark item label
+            const markItems = asmt.markSheet.filter(m => !m.isSection);
+            rows.push(["Class No", "Name", ...markItems.map(m => esc(m.label)), "Total", "Absent"].join(","));
+            // One row per student
+            for (const student of cls.students) {
+              const scoreEntry = asmt.scores.find(s => s.studentId === student.id);
+              const isAbsent = scoreEntry?.isAbsent ?? false;
+              if (isAbsent) {
+                rows.push([esc(student.classNo), esc(student.name), ...markItems.map(() => "ABS"), "ABS", "YES"].join(","));
+              } else {
+                const itemScores = markItems.map(m => {
+                  const val = scoreEntry?.scores?.[m.id];
+                  return esc(val !== null && val !== undefined ? val : "");
+                });
+                const total = markItems.reduce((sum, m) => {
+                  const val = scoreEntry?.scores?.[m.id];
+                  return sum + (typeof val === "number" ? val : 0);
+                }, 0);
+                const hasAnyScore = markItems.some(m => scoreEntry?.scores?.[m.id] !== null && scoreEntry?.scores?.[m.id] !== undefined);
+                rows.push([esc(student.classNo), esc(student.name), ...itemScores, hasAnyScore ? esc(total) : "", "NO"].join(","));
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!hasData) {
+      toast.error(lang === "zh" ? "沒有可匯出的分數資料" : "No score data to export");
+      return;
+    }
+    const csv = rows.join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `scores-export-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    toast.success(lang === "zh" ? "分數已匯出為 CSV" : "Scores exported as CSV");
+  };
+
   const handleImport = async () => {
     try {
       const parsed = JSON.parse(importText);
@@ -3743,7 +3809,7 @@ function BackupTab() {
           <p className="text-xs text-slate-400 mt-2 text-center">{lang === "zh" ? `狀態: ${syncStatus}` : `Status: ${syncStatus}`}</p>
         </div>
 
-        {/* Export */}
+        {/* Export JSON */}
         <div className="bg-white rounded-xl border border-slate-200 p-6">
           <div className="flex items-center gap-3 mb-4">
             <div className="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center"><Download className="w-5 h-5 text-green-600" /></div>
@@ -3753,6 +3819,21 @@ function BackupTab() {
             </div>
           </div>
           <Button onClick={handleExport} className="w-full gap-2"><Download className="w-4 h-4" />{t("export")}</Button>
+        </div>
+
+        {/* Export Scores CSV */}
+        <div className="bg-white rounded-xl border border-emerald-200 p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center"><FileSpreadsheet className="w-5 h-5 text-emerald-600" /></div>
+            <div>
+              <h3 className="font-bold text-slate-800">{lang === "zh" ? "匯出分數 CSV" : "Export Scores CSV"}</h3>
+              <p className="text-xs text-slate-500">{lang === "zh" ? "下載所有學生、所有評估的分數表，適合定期備份" : "Download all students' scores for all assessments, suitable for regular backup"}</p>
+            </div>
+          </div>
+          <Button onClick={handleExportScoresCSV} className="w-full gap-2 bg-emerald-600 hover:bg-emerald-700">
+            <FileSpreadsheet className="w-4 h-4" />{lang === "zh" ? "匯出所有分數" : "Export All Scores"}
+          </Button>
+          <p className="text-xs text-slate-400 mt-2 text-center">{lang === "zh" ? "格式：學年 | 科目 | 班級 | 評估 | 學生分數" : "Format: Year | Subject | Class | Assessment | Student Scores"}</p>
         </div>
 
         {/* Import */}
