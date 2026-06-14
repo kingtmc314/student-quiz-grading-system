@@ -23,6 +23,7 @@ import {
   saveTopics, deleteTopicDb, replaceSubjectTopicsDb,
   saveWeightingScheme, deleteWeightingSchemeDb,
   saveSyllabusItems,
+  saveSyllabusItemsForSubject,
   saveSchoolYear, deleteSchoolYearDb,
   ensureYearSubject, removeYearSubjectDb,
   saveClass, deleteClassDb,
@@ -480,7 +481,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       setSyllabusItemsState(prev => {
         const otherItems = prev.filter(i => i.subjectId !== subjectId);
         const merged = [...otherItems, ...items];
-        saveSyllabusItems(merged).catch(console.error);
+        // Only delete/insert for this subject in DB (not all subjects)
+        saveSyllabusItemsForSubject(subjectId, items).catch(console.error);
         return merged;
       });
     } else {

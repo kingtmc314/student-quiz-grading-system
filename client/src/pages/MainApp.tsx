@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.4.0";
+const APP_VERSION = "v1.7.0";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -2857,6 +2857,7 @@ function SettingsTab() {
   const [syllabusPreview, setSyllabusPreview] = useState<import("@/contexts/DataContext").SyllabusItem[]>([]);
   const [syllabusFilter, setSyllabusFilter] = useState<"all" | "Junior" | "Senior">("all");
   const [syllabusSubjectId, setSyllabusSubjectId] = useState<string>("");
+  const [syllabusViewSubjectFilter, setSyllabusViewSubjectFilter] = useState<string>("all");
   const [syllabusSearch, setSyllabusSearch] = useState("");
   const [syllabusLearningUnitFilter, setSyllabusLearningUnitFilter] = useState("all");
 
@@ -2924,11 +2925,10 @@ function SettingsTab() {
     toast.success(lang === "zh" ? "課程大綱已清除" : "Syllabus cleared");
   };
 
-  const syllabusSource = syllabusPreview.length > 0 ? syllabusPreview : (
-    syllabusSubjectId ? syllabusItems.filter(s => s.subjectId === syllabusSubjectId || !s.subjectId) : syllabusItems
-  );
+  const syllabusSource = syllabusPreview.length > 0 ? syllabusPreview : syllabusItems;
   const availableLearningUnits = Array.from(new Set(syllabusSource.map(s => s.learningUnit).filter(Boolean))).sort((a, b) => a.localeCompare(b));
   const displayedSyllabus = syllabusSource
+    .filter(s => syllabusViewSubjectFilter === "all" || s.subjectId === syllabusViewSubjectFilter)
     .filter(s => syllabusFilter === "all" || s.level === syllabusFilter)
     .filter(s => syllabusLearningUnitFilter === "all" || s.learningUnit === syllabusLearningUnitFilter)
     .filter(s => !syllabusSearch || s.learningObjective.toLowerCase().includes(syllabusSearch.toLowerCase()) || s.strand.toLowerCase().includes(syllabusSearch.toLowerCase()) || s.learningUnit.toLowerCase().includes(syllabusSearch.toLowerCase()));
@@ -3225,6 +3225,13 @@ function SettingsTab() {
                     </button>
                   ))}
                 </div>
+                <Select value={syllabusViewSubjectFilter} onValueChange={setSyllabusViewSubjectFilter}>
+                  <SelectTrigger className="h-7 text-xs w-36 bg-white"><SelectValue placeholder={lang === "zh" ? "全部科目" : "All Subjects"} /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{lang === "zh" ? "全部科目" : "All Subjects"}</SelectItem>
+                    {subjects.map(s => <SelectItem key={s.id} value={s.id}>{lang === "zh" ? s.nameCht || s.name : s.name} ({s.code})</SelectItem>)}
+                  </SelectContent>
+                </Select>
                 <Select value={syllabusLearningUnitFilter} onValueChange={setSyllabusLearningUnitFilter}>
                   <SelectTrigger className="h-7 text-xs w-44 bg-white"><SelectValue placeholder={lang === "zh" ? "學習單元" : "Learning Unit"} /></SelectTrigger>
                   <SelectContent>
@@ -3370,6 +3377,13 @@ function SettingsTab() {
                     </button>
                   ))}
                 </div>
+                <Select value={syllabusViewSubjectFilter} onValueChange={setSyllabusViewSubjectFilter}>
+                  <SelectTrigger className="h-7 text-xs w-36 bg-white"><SelectValue placeholder={lang === "zh" ? "全部科目" : "All Subjects"} /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{lang === "zh" ? "全部科目" : "All Subjects"}</SelectItem>
+                    {subjects.map(s => <SelectItem key={s.id} value={s.id}>{lang === "zh" ? s.nameCht || s.name : s.name} ({s.code})</SelectItem>)}
+                  </SelectContent>
+                </Select>
                 <Select value={syllabusLearningUnitFilter} onValueChange={setSyllabusLearningUnitFilter}>
                   <SelectTrigger className="h-7 text-xs w-44 bg-white"><SelectValue placeholder={lang === "zh" ? "學習單元" : "Learning Unit"} /></SelectTrigger>
                   <SelectContent>

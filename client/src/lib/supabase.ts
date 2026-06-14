@@ -439,7 +439,19 @@ export async function deleteWeightingSchemeDb(id: string) {
   if (error) console.error('deleteWeightingScheme error:', error);
 }
 
-/** Save syllabus items (replace all) */
+/** Save syllabus items for a specific subject (replace only that subject's items) */
+export async function saveSyllabusItemsForSubject(subjectId: string, items: SyllabusItem[]) {
+  // Delete existing items for this subject only
+  await supabase.from('sqgs_syllabus_items').delete().eq('subject_id', subjectId);
+  if (items.length > 0) {
+    const { error } = await supabase
+      .from('sqgs_syllabus_items')
+      .insert(items.map(syllabusItemToDb));
+    if (error) console.error('saveSyllabusItemsForSubject error:', error);
+  }
+}
+
+/** Save syllabus items (replace all) - kept for backward compatibility */
 export async function saveSyllabusItems(items: SyllabusItem[]) {
   // Delete all existing, then insert new
   await supabase.from('sqgs_syllabus_items').delete().neq('id', '');
