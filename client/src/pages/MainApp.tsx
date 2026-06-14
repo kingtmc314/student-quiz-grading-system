@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.9.0";
+const APP_VERSION = "v1.10.0";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -2097,9 +2097,170 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     win.document.write(`<!DOCTYPE html><html><head><title>${cls.name} — ${lang === "zh" ? "統測/大考總表" : "Summary Table"}</title>
       <style>body{font-family:sans-serif;padding:16px}h2{font-size:14px;margin-bottom:8px}@media print{@page{size:landscape}}</style></head>
       <body><h2>${cls.name} — ${lang === "zh" ? "統測/大考總表" : "Summary Table"} (${year.label})</h2>${tableHtml}</body></html>`);
-    win.document.close();
+        win.document.close();
     win.focus();
     win.print();
+  };
+
+  const handleBulkExportPDF = () => {
+    const globalSubject = getGlobalSubject(subjectId);
+    const topics = globalSubject?.topics ?? [];
+    const colorForPct = (pct: number | null) =>
+      pct === null ? "#94a3b8" : pct >= 70 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#ef4444";
+    const today = new Date().toLocaleDateString(lang === "zh" ? "zh-HK" : "en-GB", { year: "numeric", month: "long", day: "numeric" });
+    const subjectName = lang === "zh" ? subject.nameCht : subject.name;
+
+    const studentPages = sortedStudents.map(student => {
+      const displayName = lang === "zh" && student.nameCht ? student.nameCht : student.name;
+      // Assessment history
+      const assessmentHistory = assessments.map(a => {
+        const entry = a.scores.find(s => s.studentId === student.id);
+        const isAbsent = entry?.isAbsent ?? false;
+        const total = isAbsent ? null : getScoreTotal(a, student.id);
+        const max = getAssessmentMax(a);
+        const pct = max > 0 && total !== null ? Math.round((total / max) * 100) : null;
+        const nature = getNature(a.natureId ?? "");
+        const classTotals = cls.students.map(s => getScoreTotal(a, s.id)).filter(v => v !== null) as number[];
+        classTotals.sort((a, b) => b - a);
+        const rank = total !== null ? classTotals.indexOf(total) + 1 : null;
+        return {
+          id: a.id,
+          title: lang === "zh" && a.titleCht ? a.titleCht : a.title,
+          code: a.code, date: a.date,
+          nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : "",
+          isExam: nature?.isExam ?? false,
+          isAbsent, total, max, pct, rank, classSize: classTotals.length,
+        };
+      });
+      // Topic analysis
+      const topicAnalysis = topics.map(topic => {
+        let earned = 0, tmax = 0;
+        assessments.forEach(a => {
+          const items = a.markSheet.filter(i => !i.isSection && i.topicId === topic.id);
+          if (items.length === 0) return;
+          const entry = a.scores.find(s => s.studentId === student.id);
+          if (!entry || entry.isAbsent) return;
+          const scoreMap: Record<string, number> = {};
+          if (Array.isArray(entry.scores)) {
+            (entry.scores as Array<{ itemId: string; score: number | null }>).forEach(s => { scoreMap[s.itemId] = s.score ?? 0; });
+          } else {
+            Object.entries(entry.scores as Record<string, number | null>).forEach(([k, v]) => { scoreMap[k] = v ?? 0; });
+          }
+          items.forEach(item => { earned += scoreMap[item.id] ?? 0; tmax += item.maxMark || 0; });
+        });
+        const pct = tmax > 0 ? Math.round((earned / tmax) * 100) : null;
+        return {
+          id: topic.id,
+          name: lang === "zh" && topic.nameCht ? topic.nameCht : topic.name,
+          code: topic.code, pct, earned, max: tmax,
+          status: pct === null ? "none" : pct >= 70 ? "strong" : pct >= 50 ? "average" : "weak",
+        };
+      }).filter(t => t.max > 0);
+      const gradedAssessments = assessmentHistory.filter(a => a.pct !== null);
+      const caHistory = gradedAssessments.filter(a => !a.isExam);
+      const examHistory = gradedAssessments.filter(a => a.isExam);
+      const avgPct = gradedAssessments.length > 0 ? Math.round(gradedAssessments.reduce((s, a) => s + (a.pct ?? 0), 0) / gradedAssessments.length) : null;
+      const caTotal = calcCATotal(student.id, assessments, getNature, scheme);
+      const examTotal = calcExamTotal(student.id, assessments, getNature, scheme);
+
+      const statsHtml = [
+        { label: lang === "zh" ? "整體平均" : "Overall Avg", value: avgPct !== null ? `${avgPct}%` : "—", color: avgPct !== null ? (avgPct >= 70 ? "#16a34a" : avgPct >= 50 ? "#d97706" : "#dc2626") : "#94a3b8" },
+        { label: lang === "zh" ? "CA總分" : "CA Total", value: caTotal !== null ? `${caTotal}%` : "—", color: caTotal !== null ? (caTotal >= 70 ? "#16a34a" : caTotal >= 50 ? "#d97706" : "#dc2626") : "#94a3b8" },
+        { label: lang === "zh" ? "大考總分" : "Exam Total", value: examTotal !== null ? `${examTotal}%` : "—", color: examTotal !== null ? (examTotal >= 70 ? "#16a34a" : examTotal >= 50 ? "#d97706" : "#dc2626") : "#94a3b8" },
+        { label: lang === "zh" ? "強項課題" : "Strong Topics", value: String(topicAnalysis.filter(t => t.status === "strong").length), color: "#16a34a" },
+      ].map(stat => `<div style="border:1px solid #e2e8f0;border-radius:6px;padding:8px;text-align:center;background:#f8fafc;">
+        <p style="margin:0 0 3px 0;font-size:9px;color:#64748b">${stat.label}</p>
+        <p style="margin:0;font-size:20px;font-weight:800;color:${stat.color};font-family:monospace">${stat.value}</p>
+      </div>`).join("");
+
+      const assessRows = assessmentHistory.map((a, i) => `<tr style="background:${i % 2 === 0 ? "#f8fafc" : "white"};border-bottom:1px solid #e2e8f0">
+        <td style="padding:5px 8px;font-weight:600">${a.title}${a.code ? ` (${a.code})` : ""}</td>
+        <td style="padding:5px 8px;text-align:center"><span style="background:${a.isExam ? "#ede9fe" : "#dbeafe"};color:${a.isExam ? "#6d28d9" : "#1d4ed8"};border-radius:3px;padding:1px 5px;font-size:9px;font-weight:600">${a.nature || (a.isExam ? "Exam" : "CA")}</span></td>
+        <td style="padding:5px 8px;text-align:center;color:#64748b">${a.date || "—"}</td>
+        <td style="padding:5px 8px;text-align:center;font-family:monospace">${a.isAbsent ? (lang === "zh" ? "缺席" : "ABS") : a.total !== null ? `${a.total}/${a.max}` : "—"}</td>
+        <td style="padding:5px 8px;text-align:center;font-weight:700;font-family:monospace;color:${a.pct !== null ? colorForPct(a.pct) : "#94a3b8"}">${a.pct !== null ? `${a.pct}%` : "—"}</td>
+        <td style="padding:5px 8px;text-align:center;font-family:monospace;color:#64748b">${a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
+      </tr>`).join("");
+
+      const topicRows = topicAnalysis.map((topic, i) => `<tr style="background:${i % 2 === 0 ? "#f8fafc" : "white"};border-bottom:1px solid #e2e8f0">
+        <td style="padding:5px 8px">${topic.code ? `<span style="font-family:monospace;color:#94a3b8;margin-right:4px;font-size:9px">${topic.code}</span>` : ""}<span style="font-weight:600">${topic.name}</span></td>
+        <td style="padding:5px 8px;text-align:center;font-family:monospace">${topic.max > 0 ? `${topic.earned}/${topic.max}` : "—"}</td>
+        <td style="padding:5px 8px;text-align:center;font-weight:700;font-family:monospace;color:${colorForPct(topic.pct)}">${topic.pct !== null ? `${topic.pct}%` : "—"}</td>
+        <td style="padding:5px 8px;text-align:center"><span style="background:${topic.status === "strong" ? "#dcfce7" : topic.status === "average" ? "#fef9c3" : "#fee2e2"};color:${topic.status === "strong" ? "#16a34a" : topic.status === "average" ? "#b45309" : "#dc2626"};border-radius:3px;padding:1px 5px;font-size:9px;font-weight:700">${topic.status === "strong" ? (lang === "zh" ? "強" : "Strong") : topic.status === "average" ? (lang === "zh" ? "中" : "Average") : (lang === "zh" ? "弱" : "Weak")}</span></td>
+        <td style="padding:5px 8px">${topic.pct !== null ? `<div style="background:#e2e8f0;border-radius:3px;height:8px;overflow:hidden"><div style="background:${colorForPct(topic.pct)};height:100%;width:${topic.pct}%;border-radius:3px"></div></div>` : ""}</td>
+      </tr>`).join("");
+
+      return `<div style="page-break-after:always;font-family:'Helvetica Neue',Arial,sans-serif;font-size:11px;color:#1e293b;line-height:1.5;padding:0">
+        <div style="border-bottom:2px solid #1e40af;padding-bottom:10px;margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start">
+            <div>
+              <h1 style="font-size:18px;font-weight:800;color:#1e40af;margin:0 0 3px 0">${lang === "zh" ? "學生成績報告" : "Student Performance Report"}</h1>
+              <p style="margin:0;color:#64748b;font-size:10px">${lang === "zh" ? "生成日期" : "Generated"}: ${today}</p>
+            </div>
+            <div style="text-align:right">
+              <p style="margin:0;font-weight:700;font-size:13px">${displayName}</p>
+              <p style="margin:2px 0 0 0;color:#64748b;font-size:10px">${lang === "zh" ? "班號" : "Class No"}: ${student.classNo} · ${cls.name} · ${subjectName} · ${year.label}</p>
+            </div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">${statsHtml}</div>
+        <div style="margin-bottom:14px">
+          <h2 style="font-size:12px;font-weight:700;color:#1e293b;margin:0 0 6px 0;border-left:3px solid #1e40af;padding-left:8px">${lang === "zh" ? "評估歷史" : "Assessment History"}</h2>
+          <table style="width:100%;border-collapse:collapse;font-size:10px">
+            <thead><tr style="background:#1e40af;color:white">
+              <th style="padding:5px 8px;text-align:left;font-weight:600">${lang === "zh" ? "評估名稱" : "Assessment"}</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:600">${lang === "zh" ? "類型" : "Type"}</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:600">${lang === "zh" ? "日期" : "Date"}</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:600">${lang === "zh" ? "分數" : "Score"}</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:600">%</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:600">${lang === "zh" ? "班級排名" : "Rank"}</th>
+            </tr></thead>
+            <tbody>${assessRows || `<tr><td colspan="6" style="padding:10px;text-align:center;color:#94a3b8">—</td></tr>`}</tbody>
+          </table>
+        </div>
+        ${topicAnalysis.length > 0 ? `<div style="margin-bottom:14px">
+          <h2 style="font-size:12px;font-weight:700;color:#1e293b;margin:0 0 6px 0;border-left:3px solid #1e40af;padding-left:8px">${lang === "zh" ? "課題分析" : "Topic Analysis"}</h2>
+          <table style="width:100%;border-collapse:collapse;font-size:10px">
+            <thead><tr style="background:#1e40af;color:white">
+              <th style="padding:5px 8px;text-align:left;font-weight:600">${lang === "zh" ? "課題" : "Topic"}</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:600">${lang === "zh" ? "得分" : "Score"}</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:600">%</th>
+              <th style="padding:5px 8px;text-align:center;font-weight:600">${lang === "zh" ? "水平" : "Level"}</th>
+              <th style="padding:5px 8px;text-align:left;font-weight:600;width:30%">${lang === "zh" ? "進度條" : "Progress"}</th>
+            </tr></thead>
+            <tbody>${topicRows}</tbody>
+          </table>
+        </div>` : ""}
+        <div style="border-top:1px solid #e2e8f0;padding-top:8px;margin-top:10px;display:flex;justify-content:space-between;font-size:9px;color:#94a3b8">
+          <span>${subjectName} · ${cls.name} · ${year.label}</span>
+          <span>${lang === "zh" ? "由 Maths Analytics 生成" : "Generated by Maths Analytics"}</span>
+        </div>
+      </div>`;
+    });
+
+    const win = window.open("", "_blank");
+    if (!win) { toast.error(lang === "zh" ? "無法開啟新視窗，請允許彈出視窗" : "Popup blocked. Please allow popups."); return; }
+    win.document.write(`<!DOCTYPE html><html><head>
+      <meta charset="UTF-8">
+      <title>${cls.name} — ${lang === "zh" ? "全班成績報告" : "Class Performance Reports"} (${year.label})</title>
+      <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 0; background: white; }
+        @media print {
+          @page { margin: 15mm 12mm; size: A4; }
+          * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          div[style*="page-break-after:always"]:last-child { page-break-after: avoid !important; }
+        }
+        @media screen {
+          body { padding: 20px; background: #f1f5f9; }
+          div[style*="page-break-after:always"] { background: white; padding: 20mm 15mm; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-radius: 4px; }
+        }
+      </style>
+    </head><body>
+      ${studentPages.join("")}
+      <script>window.onload = function() { window.print(); }<\/script>
+    </body></html>`);
+    win.document.close();
   };
 
   return (
@@ -2118,6 +2279,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
           <Button size="sm" variant="outline" onClick={handleExportCSV} className="gap-1.5"><Download className="w-4 h-4" />{t("exportCSV")}</Button>
           <Button size="sm" variant="outline" onClick={handleExportExcel} className="gap-1.5 border-green-300 text-green-700 hover:bg-green-50"><Download className="w-4 h-4" />{lang === "zh" ? "匯出 Excel" : "Export Excel"}</Button>
           <Button size="sm" variant="outline" onClick={handlePrint} className="gap-1.5 border-purple-300 text-purple-700 hover:bg-purple-50"><Printer className="w-4 h-4" />{lang === "zh" ? "列印/PDF" : "Print / PDF"}</Button>
+          <Button size="sm" onClick={handleBulkExportPDF} className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white"><FileText className="w-4 h-4" />{lang === "zh" ? "全班 PDF 報告" : "All Students PDF"}</Button>
         </div>
       </div>
 
