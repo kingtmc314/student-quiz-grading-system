@@ -13,7 +13,7 @@ import {
   GraduationCap, Languages, Save, ChevronDown, ChevronRight, Plus, Trash2,
   BookOpen, Menu, X, Pencil, Check, Upload, FileEdit, Tag, Wand2, FileText,
   ArrowUp, ArrowDown, ChevronLeft, Printer, TrendingUp, TrendingDown, Minus,
-  Download, Copy, BarChart2, Tags, CalendarDays, ArrowRight, Cloud,
+  Download, Copy, BarChart2, Tags, CalendarDays, ArrowRight, Cloud, ClipboardPaste,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useData } from "@/contexts/DataContext";
@@ -722,6 +722,13 @@ function GradingTab({
   const [quickCount, setQuickCount] = useState("10");
   const [msTab, setMsTab] = useState("editor");
 
+  // Bulk paste state
+  const [showBulkPaste, setShowBulkPaste] = useState(false);
+  const [bulkPasteText, setBulkPasteText] = useState("");
+  const [bulkPastePreview, setBulkPastePreview] = useState<Array<{ studentId: string; studentName: string; classNo: string; scores: Record<string, number | null>; matched: boolean; isAbsent?: boolean }>>([]);
+  const [bulkParsed, setBulkParsed] = useState(false);
+  const [bulkSaving, setBulkSaving] = useState(false);
+
   // Add assessment dialog
   const [showAddAssessment, setShowAddAssessment] = useState(false);
   const [newCode, setNewCode] = useState("");
@@ -932,6 +939,9 @@ function GradingTab({
           <Button size="sm" variant="outline" onClick={() => setShowAddAssessment(true)} className="gap-1 h-8 text-xs shrink-0"><Plus className="w-3.5 h-3.5" />{t("addAssessment")}</Button>
           {assessment && (
             <Button size="sm" variant="outline" onClick={openMarkSheet} className="gap-1 h-8 text-xs shrink-0"><FileEdit className="w-3.5 h-3.5" />{t("editMarkSheet")}</Button>
+          )}
+          {assessment && markSheet.length > 0 && (
+            <Button size="sm" variant="outline" onClick={() => { setShowBulkPaste(true); setBulkPasteText(""); setBulkPastePreview([]); setBulkParsed(false); }} className="gap-1 h-8 text-xs shrink-0 border-emerald-300 text-emerald-700 hover:bg-emerald-50"><ClipboardPaste className="w-3.5 h-3.5" />{t("bulkPaste")}</Button>
           )}
           {assessment && (
             <button onClick={() => {
@@ -1225,6 +1235,181 @@ function GradingTab({
               toast.success(t("saved"));
               setShowMarkSheet(false);
             }}>{t("save")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Paste Dialog */}
+      <Dialog open={showBulkPaste} onOpenChange={setShowBulkPaste}>
+        <DialogContent className="sm:max-w-3xl max-h-[90vh] flex flex-col">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><ClipboardPaste className="w-5 h-5 text-emerald-600" />{t("bulkPasteTitle")}</DialogTitle></DialogHeader>
+          <div className="flex-1 overflow-y-auto space-y-4 py-2">
+            {!bulkParsed ? (
+              <>
+                <p className="text-sm text-slate-500 whitespace-pre-line">{t("bulkPasteHint")}</p>
+                <div className="bg-slate-50 rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs font-bold text-slate-500 mb-1">{lang === "zh" ? "範例 (Tab 分隔)：" : "Example (Tab separated):"}</p>
+                  <pre className="text-xs text-slate-600 font-mono overflow-x-auto">{`S5A08\t5\t3\t4\t2\t5\nS5B28\t4\t5\t3\t5\t4\nS5C16\tABS`}</pre>
+                </div>
+                <Textarea
+                  value={bulkPasteText}
+                  onChange={e => setBulkPasteText(e.target.value)}
+                  placeholder={lang === "zh" ? "在此貼上從 Excel 複製的資料..." : "Paste data copied from Excel here..."}
+                  className="min-h-[200px] font-mono text-sm"
+                  autoFocus
+                />
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-3 text-sm">
+                  <Badge variant="outline" className="border-emerald-300 text-emerald-700">{t("bulkPasteMatched")}: {bulkPastePreview.filter(r => r.matched && !r.isAbsent).length}</Badge>
+                  <Badge variant="outline" className="border-orange-300 text-orange-700">{t("bulkPasteAbsent")}: {bulkPastePreview.filter(r => r.isAbsent).length}</Badge>
+                  <Badge variant="outline" className="border-red-300 text-red-700">{t("bulkPasteUnmatched")}: {bulkPastePreview.filter(r => !r.matched).length}</Badge>
+                </div>
+                <div className="border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200">
+                        <tr>
+                          <th className="px-2 py-1.5 text-left font-bold text-slate-500">#</th>
+                          <th className="px-2 py-1.5 text-left font-bold text-slate-500">{t("classNo")}</th>
+                          <th className="px-2 py-1.5 text-left font-bold text-slate-500">{t("studentName")}</th>
+                          {questions.map((q, i) => (
+                            <th key={q.id} className="px-1.5 py-1.5 text-center font-mono font-bold text-slate-500 min-w-[2.5rem]">{q.label}</th>
+                          ))}
+                          <th className="px-2 py-1.5 text-center font-bold text-slate-500">{t("total")}</th>
+                          <th className="px-2 py-1.5 text-center font-bold text-slate-500">{t("status")}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {bulkPastePreview.map((row, idx) => {
+                          const rowTotal = row.isAbsent ? 0 : Object.values(row.scores).reduce((s: number, v) => s + (v ?? 0), 0);
+                          return (
+                            <tr key={idx} className={cn("border-b border-slate-100 last:border-0", !row.matched ? "bg-red-50" : row.isAbsent ? "bg-orange-50" : idx % 2 === 0 ? "bg-white" : "bg-slate-50/50")}>
+                              <td className="px-2 py-1.5 text-slate-400 font-mono">{idx + 1}</td>
+                              <td className="px-2 py-1.5 font-mono">{row.classNo}</td>
+                              <td className="px-2 py-1.5 font-semibold">{row.studentName}</td>
+                              {row.isAbsent ? (
+                                <td colSpan={questions.length} className="px-2 py-1.5 text-center font-bold text-orange-500">ABS</td>
+                              ) : (
+                                questions.map(q => {
+                                  const v = row.scores[q.id];
+                                  const isOver = v !== null && v !== undefined && v > q.maxMark;
+                                  return (
+                                    <td key={q.id} className={cn("px-1.5 py-1.5 text-center font-mono", isOver ? "text-red-600 font-bold" : v !== null ? "text-slate-800" : "text-slate-300")}>
+                                      {v !== null && v !== undefined ? v : "—"}
+                                    </td>
+                                  );
+                                })
+                              )}
+                              <td className="px-2 py-1.5 text-center font-mono font-bold">{row.isAbsent ? "—" : `${rowTotal}/${maxTotal}`}</td>
+                              <td className="px-2 py-1.5 text-center">
+                                {!row.matched ? <span className="text-red-500 font-bold">✗</span> : row.isAbsent ? <span className="text-orange-500 font-bold">ABS</span> : <span className="text-emerald-500 font-bold">✓</span>}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+          <DialogFooter className="gap-2">
+            {bulkParsed && (
+              <Button variant="outline" onClick={() => setBulkParsed(false)}>{t("back")}</Button>
+            )}
+            <Button variant="outline" onClick={() => setShowBulkPaste(false)}>{t("cancel")}</Button>
+            {!bulkParsed ? (
+              <Button onClick={() => {
+                // Parse the pasted text
+                const lines = bulkPasteText.trim().split(/\r?\n/).filter(Boolean);
+                if (lines.length === 0) { toast.error(t("bulkPasteNoData")); return; }
+                const preview: typeof bulkPastePreview = [];
+                for (const line of lines) {
+                  const parts = line.split(/\t/).map(p => p.trim());
+                  if (parts.length < 1) continue;
+                  const identifier = parts[0];
+                  // Try to match student by classNo first, then by name
+                  let matchedStudent = sortedStudents.find(s => s.classNo.toLowerCase() === identifier.toLowerCase());
+                  if (!matchedStudent) matchedStudent = sortedStudents.find(s => s.name.toLowerCase() === identifier.toLowerCase() || (s.nameCht && s.nameCht === identifier));
+                  // Check if ABS
+                  const isAbs = parts.length === 2 && parts[1].toUpperCase() === "ABS";
+                  if (isAbs) {
+                    preview.push({
+                      studentId: matchedStudent?.id ?? "",
+                      studentName: matchedStudent ? (lang === "zh" && matchedStudent.nameCht ? matchedStudent.nameCht : matchedStudent.name) : identifier,
+                      classNo: matchedStudent?.classNo ?? identifier,
+                      scores: {},
+                      matched: !!matchedStudent,
+                      isAbsent: true,
+                    });
+                    continue;
+                  }
+                  // Parse scores
+                  const scoreValues = parts.slice(1);
+                  const scoresRecord: Record<string, number | null> = {};
+                  questions.forEach((q, i) => {
+                    if (i < scoreValues.length) {
+                      const raw = scoreValues[i];
+                      if (raw === "" || raw === "-" || raw === "—") {
+                        scoresRecord[q.id] = null;
+                      } else {
+                        const num = parseFloat(raw);
+                        scoresRecord[q.id] = isNaN(num) ? null : num;
+                      }
+                    } else {
+                      scoresRecord[q.id] = null;
+                    }
+                  });
+                  preview.push({
+                    studentId: matchedStudent?.id ?? "",
+                    studentName: matchedStudent ? (lang === "zh" && matchedStudent.nameCht ? matchedStudent.nameCht : matchedStudent.name) : identifier,
+                    classNo: matchedStudent?.classNo ?? identifier,
+                    scores: scoresRecord,
+                    matched: !!matchedStudent,
+                    isAbsent: false,
+                  });
+                }
+                if (preview.length === 0) { toast.error(t("bulkPasteNoData")); return; }
+                setBulkPastePreview(preview);
+                setBulkParsed(true);
+              }} disabled={!bulkPasteText.trim()} className="gap-1.5">
+                {t("bulkPastePreview")}
+              </Button>
+            ) : (
+              <Button onClick={async () => {
+                const matched = bulkPastePreview.filter(r => r.matched);
+                if (matched.length === 0) { toast.error(t("bulkPasteNoData")); return; }
+                setBulkSaving(true);
+                try {
+                  for (const row of matched) {
+                    if (row.isAbsent) {
+                      await upsertScore(yearId, subjectId, classId, assessmentId, { studentId: row.studentId, scores: {}, isAbsent: true });
+                    } else {
+                      // Fill null scores with 0
+                      const finalScores: Record<string, number | null> = {};
+                      questions.forEach(q => {
+                        finalScores[q.id] = row.scores[q.id] ?? 0;
+                      });
+                      await upsertScore(yearId, subjectId, classId, assessmentId, { studentId: row.studentId, scores: finalScores, isAbsent: false });
+                    }
+                  }
+                  toast.success(`${t("bulkPasteSuccess")} — ${matched.length} ${t("bulkPasteStudents")}`);
+                  setShowBulkPaste(false);
+                  setBulkPasteText("");
+                  setBulkPastePreview([]);
+                  setBulkParsed(false);
+                } catch (err: any) {
+                  toast.error(lang === "zh" ? `儲存失敗: ${err?.message || "未知錯誤"}` : `Save failed: ${err?.message || "Unknown error"}`);
+                } finally {
+                  setBulkSaving(false);
+                }
+              }} disabled={bulkSaving || bulkPastePreview.filter(r => r.matched).length === 0} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
+                {bulkSaving ? <><span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />{lang === "zh" ? "儲存中..." : "Saving..."}</> : <><Check className="w-3.5 h-3.5" />{t("bulkPasteApply")} ({bulkPastePreview.filter(r => r.matched).length})</>}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -206,6 +206,19 @@ const translations = {
     topic: "Topic",
     status: "Status",
     assessment: "Assessment",
+    // Bulk paste
+    bulkPaste: "Bulk Paste",
+    bulkPasteTitle: "Bulk Paste Scores from Excel",
+    bulkPasteHint: "Copy scores from Excel and paste here.\nFormat: Each row = one student. First column = Class No. or Student Name, remaining columns = scores for each question in order.\nColumns separated by Tab (auto-detected from Excel copy).",
+    bulkPastePreview: "Preview",
+    bulkPasteMatched: "Matched",
+    bulkPasteUnmatched: "Unmatched",
+    bulkPasteSkipped: "Skipped",
+    bulkPasteApply: "Apply All",
+    bulkPasteNoData: "No valid data detected. Please check the format.",
+    bulkPasteSuccess: "Bulk scores saved successfully",
+    bulkPasteStudents: "students",
+    bulkPasteAbsent: "ABS",
   },
   zh: {
     // App
@@ -410,6 +423,19 @@ const translations = {
     topic: "課題",
     status: "狀態",
     assessment: "評估",
+    // Bulk paste
+    bulkPaste: "批量貼上",
+    bulkPasteTitle: "從 Excel 批量貼上分數",
+    bulkPasteHint: "從 Excel 複製分數後貼到此處。\n格式：每行一位學生，第一列為學號或學生姓名，其餘列為各題分數（按題目順序）。\n列之間以 Tab 分隔（從 Excel 複製時自動產生）。",
+    bulkPastePreview: "預覽",
+    bulkPasteMatched: "已匹配",
+    bulkPasteUnmatched: "未匹配",
+    bulkPasteSkipped: "已跳過",
+    bulkPasteApply: "全部套用",
+    bulkPasteNoData: "未偵測到有效資料，請檢查格式。",
+    bulkPasteSuccess: "批量分數已成功儲存",
+    bulkPasteStudents: "位學生",
+    bulkPasteAbsent: "缺席",
   },
 };
 
