@@ -2892,27 +2892,29 @@ function SettingsTab() {
 
   const handleSaveSyllabus = () => {
     if (syllabusPreview.length === 0) return;
-    // Save to global syllabusItems store
-    setSyllabusItems(syllabusPreview);
-    // Also populate the selected subject's topics from syllabus
-    if (syllabusSubjectId) {
-      const topicsFromSyllabus = syllabusPreview.map((s, i) => ({
-        code: "",
-        name: s.learningObjective,
-        nameCht: "",
-        order: i + 1,
-        level: s.level,
-        learningUnit: s.learningUnit,
-        learningObjective: s.learningObjective,
-        strand: s.strand,
-        category: s.category,
-        remarks: s.remarks,
-      }));
-      replaceTopicsFromSyllabus(syllabusSubjectId, topicsFromSyllabus);
-      toast.success(lang === "zh" ? `課程大綱已儲存並更新「${subjects.find(s => s.id === syllabusSubjectId)?.name ?? ""}」的學習目標` : `Syllabus saved and topics updated for "${subjects.find(s => s.id === syllabusSubjectId)?.name ?? ""}"`); 
-    } else {
-      toast.success(lang === "zh" ? "課程大綱已儲存（未選擇科目，未更新學習目標）" : "Syllabus saved (no subject selected — topics not updated)");
+    if (!syllabusSubjectId) {
+      toast.error(lang === "zh" ? "請先選擇科目" : "Please select a subject first");
+      return;
     }
+    // Tag each item with the selected subjectId
+    const taggedItems = syllabusPreview.map(item => ({ ...item, subjectId: syllabusSubjectId }));
+    // Save using merge mode (only replaces items for this subject)
+    setSyllabusItems(taggedItems, syllabusSubjectId);
+    // Also populate the selected subject's topics from syllabus
+    const topicsFromSyllabus = syllabusPreview.map((s, i) => ({
+      code: "",
+      name: s.learningObjective,
+      nameCht: "",
+      order: i + 1,
+      level: s.level,
+      learningUnit: s.learningUnit,
+      learningObjective: s.learningObjective,
+      strand: s.strand,
+      category: s.category,
+      remarks: s.remarks,
+    }));
+    replaceTopicsFromSyllabus(syllabusSubjectId, topicsFromSyllabus);
+    toast.success(lang === "zh" ? `課程大綱已儲存並更新「${subjects.find(s => s.id === syllabusSubjectId)?.name ?? ""}」的學習目標` : `Syllabus saved and topics updated for "${subjects.find(s => s.id === syllabusSubjectId)?.name ?? ""}"`);
     setSyllabusPreview([]);
   };
 
@@ -2922,7 +2924,9 @@ function SettingsTab() {
     toast.success(lang === "zh" ? "課程大綱已清除" : "Syllabus cleared");
   };
 
-  const syllabusSource = syllabusPreview.length > 0 ? syllabusPreview : syllabusItems;
+  const syllabusSource = syllabusPreview.length > 0 ? syllabusPreview : (
+    syllabusSubjectId ? syllabusItems.filter(s => s.subjectId === syllabusSubjectId || !s.subjectId) : syllabusItems
+  );
   const availableLearningUnits = Array.from(new Set(syllabusSource.map(s => s.learningUnit).filter(Boolean))).sort((a, b) => a.localeCompare(b));
   const displayedSyllabus = syllabusSource
     .filter(s => syllabusFilter === "all" || s.level === syllabusFilter)

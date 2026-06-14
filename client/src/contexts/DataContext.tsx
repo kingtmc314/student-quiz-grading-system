@@ -74,6 +74,7 @@ export interface SyllabusItem {
   learningObjective: string;
   category: string;
   remarks: string;
+  subjectId?: string;
 }
 
 export interface Teacher {
@@ -260,7 +261,7 @@ interface DataContextType {
   getWeightingScheme: (form: string, subjectId: string, weightingSchemeId?: string) => WeightingScheme | undefined;
 
   syllabusItems: SyllabusItem[];
-  setSyllabusItems: (items: SyllabusItem[]) => void;
+  setSyllabusItems: (items: SyllabusItem[], subjectId?: string) => void;
 
   getSubject: (yearId: string, subjectId: string) => Subject | undefined;
 
@@ -473,9 +474,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     saveToLocalStorage(data);
   }, [teachers, natures, weightingSchemes, subjects, schoolYears, syllabusItems]);
 
-  const setSyllabusItems = useCallback((items: SyllabusItem[]) => {
-    setSyllabusItemsState(items);
-    saveSyllabusItems(items).catch(console.error);
+  const setSyllabusItems = useCallback((items: SyllabusItem[], subjectId?: string) => {
+    if (subjectId) {
+      // Merge: keep items from other subjects, replace items for this subject
+      setSyllabusItemsState(prev => {
+        const otherItems = prev.filter(i => i.subjectId !== subjectId);
+        const merged = [...otherItems, ...items];
+        saveSyllabusItems(merged).catch(console.error);
+        return merged;
+      });
+    } else {
+      setSyllabusItemsState(items);
+      saveSyllabusItems(items).catch(console.error);
+    }
   }, []);
 
   // ── Mutation helpers ──────────────────────────────────────────────────────
@@ -644,9 +655,18 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const next = prev.map(s => {
         if (s.id !== subjectId) return s;
         const manualTopics = s.topics.filter(tp => !tp.learningObjective);
-        const syllabusTopics: Topic[] = newTopics.map((t, i) => ({
-          ...t, id: nanoid(), order: manualTopics.length + i + 1,
-        }));
+        const existingSyllabusTopics = s.topics.filter(tp => !!tp.learningObjective);
+        // Match new topics to existing ones by learningObjective to preserve IDs
+        const syllabusTopics: Topic[] = newTopics.map((t, i) => {
+          const existing = existingSyllabusTopics.find(
+            ex => ex.learningObjective === t.learningObjective && ex.learningUnit === t.learningUnit
+          );
+          if (existing) {
+            // Preserve existing ID, update other fields
+            return { ...existing, ...t, id: existing.id, order: manualTopics.length + i + 1 };
+          }
+          return { ...t, id: nanoid(), order: manualTopics.length + i + 1 };
+        });
         const allTopics = [...manualTopics, ...syllabusTopics];
         replaceSubjectTopicsDb(subjectId, syllabusTopics).catch(console.error);
         return { ...s, topics: allTopics };

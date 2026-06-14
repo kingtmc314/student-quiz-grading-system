@@ -44,6 +44,7 @@ interface DbWeightingEntry {
 interface DbSyllabusItem {
   id: string; level: string; strand: string; learning_unit: string;
   learning_objective: string; category: string; remarks: string;
+  subject_id?: string;
 }
 interface DbSchoolYear { id: string; label: string; }
 interface DbYearSubject { id: number; year_id: string; subject_id: string; }
@@ -88,6 +89,7 @@ function dbToSyllabusItem(r: DbSyllabusItem): SyllabusItem {
   return {
     id: r.id, level: r.level, strand: r.strand, learningUnit: r.learning_unit,
     learningObjective: r.learning_objective, category: r.category, remarks: r.remarks,
+    subjectId: r.subject_id || undefined,
   };
 }
 
@@ -115,6 +117,7 @@ function syllabusItemToDb(s: SyllabusItem): DbSyllabusItem {
   return {
     id: s.id, level: s.level, strand: s.strand, learning_unit: s.learningUnit,
     learning_objective: s.learningObjective, category: s.category, remarks: s.remarks,
+    subject_id: s.subjectId || '',
   };
 }
 
