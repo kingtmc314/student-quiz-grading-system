@@ -925,9 +925,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const getWeightingScheme = useCallback((form: string, subjectId: string, weightingSchemeId?: string) => {
     if (weightingSchemeId) return weightingSchemes.find(w => w.id === weightingSchemeId);
     // Match on forms[] / subjectIds[] arrays first, fall back to legacy form/subjectId fields
+    // Empty forms[] means "applies to all forms" (same logic as empty subjectIds[])
     return weightingSchemes.find(w => {
-      const formMatch = w.forms ? w.forms.includes(form) : w.form === form;
-      const subjectMatch = w.subjectIds ? (w.subjectIds.length === 0 || w.subjectIds.includes(subjectId)) : w.subjectId === subjectId;
+      const wsforms = w.forms ?? (w.form ? [w.form] : []);
+      const formMatch = wsforms.length === 0 || wsforms.includes(form);
+      const subjectMatch = w.subjectIds ? (w.subjectIds.length === 0 || w.subjectIds.includes(subjectId)) : (w.subjectId === subjectId || w.subjectId === "");
       return formMatch && subjectMatch;
     });
   }, [weightingSchemes]);

@@ -473,10 +473,15 @@ function StudentMgmtTab({
                 <SelectContent>
                   <SelectItem value="__auto__">{lang === "zh" ? "自動配對（按年級/科目）" : "Auto-match (by form/subject)"}</SelectItem>
                   {weightingSchemes
-                    .filter(ws => (ws.forms ?? [ws.form]).includes(cls.form))
-                    .map(ws => (
-                      <SelectItem key={ws.id} value={ws.id}>{ws.label}</SelectItem>
-                    ))
+                    .map(ws => {
+                      const wsforms = ws.forms ?? (ws.form ? [ws.form] : []);
+                      const matchesForm = wsforms.length === 0 || wsforms.includes(cls.form);
+                      return (
+                        <SelectItem key={ws.id} value={ws.id}>
+                          {ws.label}{!matchesForm ? ` ⚠ (${wsforms.join("/")})` : ""}
+                        </SelectItem>
+                      );
+                    })
                   }
                 </SelectContent>
               </Select>
@@ -3117,7 +3122,7 @@ function SettingsTab() {
   // Weighting state
   const [showAddWeighting, setShowAddWeighting] = useState(false);
   const [editWeightingId, setEditWeightingId] = useState<string | null>(null);
-  const [weightingForm, setWeightingForm] = useState({ label: "", forms: ["S6"] as string[], subjectIds: [] as string[], examPercentage: 60 });
+  const [weightingForm, setWeightingForm] = useState({ label: "", forms: [] as string[], subjectIds: [] as string[], examPercentage: 60 });
   const [weightingEntries, setWeightingEntries] = useState<Array<{ natureId: string; percentage: number }>>([]);
   const [deleteWeightingId, setDeleteWeightingId] = useState<string | null>(null);
 
@@ -3288,7 +3293,7 @@ function SettingsTab() {
               <h3 className="text-lg font-bold text-slate-800">{lang === "zh" ? "加權方案" : "Weighting Schemes"}</h3>
               <Button size="sm" onClick={() => {
                 setEditWeightingId(null);
-                setWeightingForm({ label: "", forms: ["S6"], subjectIds: [], examPercentage: 60 });
+                setWeightingForm({ label: "", forms: [], subjectIds: [], examPercentage: 60 });
                 // Pre-populate with one row per nature
                 setWeightingEntries(natures.map(n => ({ natureId: n.id, percentage: 0 })));
                 setShowAddWeighting(true);
@@ -3706,7 +3711,7 @@ function SettingsTab() {
             <div><Label>{t("schemeLabel")}</Label><Input value={weightingForm.label} onChange={e => setWeightingForm(f => ({ ...f, label: e.target.value }))} autoFocus /></div>
             {/* Multi-select: Forms */}
             <div>
-              <Label className="mb-2 block">{lang === "zh" ? "適用年級（可多選）" : "Applicable Forms (multi-select)"}</Label>
+              <Label className="mb-2 block">{lang === "zh" ? "適用年級（留空 = 所有年級）" : "Applicable Forms (leave empty = all forms)"}</Label>
               <div className="flex flex-wrap gap-2">
                 {["S1","S2","S3","S4","S5","S6"].map(f => {
                   const checked = weightingForm.forms.includes(f);
@@ -3719,6 +3724,7 @@ function SettingsTab() {
                   );
                 })}
               </div>
+              {weightingForm.forms.length === 0 && <p className="text-[10px] text-slate-400 mt-1">{lang === "zh" ? "未選擇 = 適用所有年級" : "None selected = applies to all forms"}</p>}
             </div>
             {/* Multi-select: Subjects */}
             <div>
