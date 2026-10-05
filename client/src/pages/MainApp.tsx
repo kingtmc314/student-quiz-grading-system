@@ -6,7 +6,7 @@
  * - Tab content renders inline (no routing)
  * - 8 tabs matching reference site structure
  */
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 import {
   Users, ClipboardList, BarChart3, Table2, PieChart, User, Settings2, Database,
@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.10.0";
+const APP_VERSION = "v1.11.1";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -4066,6 +4066,7 @@ function ContextSelector({
 
   const year = yearId ? getSchoolYear(yearId) : undefined;
   const ys = yearId && subjectId ? getYearSubject(yearId, subjectId) : undefined;
+  const classCount = year?.subjects.reduce((count, subject) => count + subject.classes.length, 0) ?? 0;
 
   return (
     <div className="px-3 py-3 border-b border-[#2a3352] space-y-2">
@@ -4080,6 +4081,11 @@ function ContextSelector({
             {schoolYears.map(y => <SelectItem key={y.id} value={y.id}>{y.label}</SelectItem>)}
           </SelectContent>
         </Select>
+        {year && classCount === 0 && (
+          <p className="mt-1 text-[10px] leading-snug text-amber-300">
+            {lang === "zh" ? "此學年暫未有班別資料；請選擇另一學年查看已記錄資料。" : "This school year has no classes yet; select another year to view recorded data."}
+          </p>
+        )}
       </div>
 
       {/* Subject */}
@@ -4122,6 +4128,7 @@ function ContextSelector({
 // ─── Main App Shell ───────────────────────────────────────────────────────────
 export default function MainApp() {
   const { lang, setLang } = useI18n();
+  const { schoolYears } = useData();
   const [activeTab, setActiveTab] = useState<TabId>("students");
   const [yearId, setYearId] = useState("");
   const [subjectId, setSubjectId] = useState("");
@@ -4132,6 +4139,36 @@ export default function MainApp() {
 
   // Mark sheet editor overlay
   const [markSheetTarget, setMarkSheetTarget] = useState<{ yearId: string; subjectId: string; classId: string; assessmentId: string } | null>(null);
+
+  // Keep the visible context pointed at real data after the asynchronous Supabase load.
+  // Prefer a year/subject that already has classes, but preserve an intentional selection
+  // of a newly created empty school year so teachers can add data there.
+  useEffect(() => {
+    if (schoolYears.length === 0) return;
+
+    const selectedYear = schoolYears.find(year => year.id === yearId);
+    if (!selectedYear) {
+      const firstYearWithClasses = schoolYears.find(year => year.subjects.some(subject => subject.classes.length > 0));
+      setYearId((firstYearWithClasses ?? schoolYears[0]).id);
+      setSubjectId("");
+      setClassId("");
+      return;
+    }
+
+    const selectedYearSubject = selectedYear.subjects.find(subject => subject.subjectId === subjectId);
+    if (!selectedYearSubject) {
+      const firstSubjectWithClasses = selectedYear.subjects.find(subject => subject.classes.length > 0);
+      if (firstSubjectWithClasses) {
+        setSubjectId(firstSubjectWithClasses.subjectId);
+        setClassId("");
+      }
+      return;
+    }
+
+    if (!selectedYearSubject.classes.some(cls => cls.id === classId)) {
+      setClassId(selectedYearSubject.classes[0]?.id ?? "");
+    }
+  }, [schoolYears, yearId, subjectId, classId]);
 
   const contextProps = { yearId, subjectId, classId, setYearId, setSubjectId, setClassId };
 

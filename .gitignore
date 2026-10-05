@@ -108,7 +108,9 @@ temp/
 # Webdev artifacts (checkpoint zips, migrations, etc.)
 .webdev/
 
+# Local read-only database snapshots (may contain student records)
+data-integrity-backups/
+
 # Manus version file (auto-generated, not part of source)
 client/public/__manus__/version.json
 .project-config.json
-.github/workflows/
