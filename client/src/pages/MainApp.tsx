@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.14.0";
+const APP_VERSION = "v1.15.0";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -3160,9 +3160,26 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
             const score = entry && !entry.isAbsent ? scoreMap[item.id] ?? 0 : null;
             return { id: item.id, label: item.label, max: item.maxMark, score, pct: score !== null && item.maxMark > 0 ? Math.round((score / item.maxMark) * 100) : null, classAverage };
           });
+          const topicDetails = historyAssessment.markSheet.filter(item => !item.isSection && Boolean(item.topicId)).flatMap(item => {
+            if (!item.topicId) return [];
+            const topic = historySubject.topics.find(candidate => candidate.id === item.topicId);
+            if (!topic || !entry || entry.isAbsent) return [];
+            const score = scoreMap[item.id];
+            return [{
+              topicId: topic.id,
+              topicName: lang === "zh" && topic.nameCht ? topic.nameCht : topic.name,
+              learningUnit: topic.learningUnit || (lang === "zh" ? "未分類單元" : "Unassigned unit"),
+              subjectId: yearSubject.subjectId,
+              subjectName: lang === "zh" && historySubject.nameCht ? historySubject.nameCht : historySubject.name,
+              subjectCode: historySubject.code || historySubject.name,
+              score: score ?? 0,
+              max: item.maxMark,
+            }];
+          });
           return {
             id: `${historyYear.id}-${yearSubject.subjectId}-${historyClass.id}-${historyAssessment.id}`,
             yearLabel: historyYear.label,
+            subjectId: yearSubject.subjectId,
             subjectName: lang === "zh" && historySubject.nameCht ? historySubject.nameCht : historySubject.name,
             subjectCode: historySubject.code || historySubject.name,
             className: historyClass.name,
@@ -3175,6 +3192,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
             classSize: classTotals.length,
             classAverage: classTotals.length > 0 ? classTotals.reduce((sum, value) => sum + value, 0) / classTotals.length : null,
             questionDetails,
+            topicDetails,
           };
         });
       });
@@ -3193,6 +3211,61 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   }, new Map<string, { total: number; count: number; subjects: Set<string> }>()).entries()).map(([yearLabel, item]) => ({ yearLabel, pct: Math.round(item.total / item.count), assessments: item.count, subjects: Array.from(item.subjects).join(" · ") }));
   const allYearsTrend = gradedAllYearsAssessments.map(item => ({ label: item.code || item.subjectCode, pct: item.pct ?? 0 }));
   const detailedAssessmentHistory = allYearsAssessments.filter(item => item.questionDetails.length > 0 && (item.total !== null || item.isAbsent));
+  const allYearsTopicAnalysis = Array.from(allYearsAssessments.reduce((groups, assessment) => {
+    assessment.topicDetails.forEach(topic => {
+      const key = `${topic.subjectId}-${topic.topicId}`;
+      const current = groups.get(key) ?? {
+        ...topic,
+        earned: 0,
+        max: 0,
+        itemCount: 0,
+        assessmentIds: new Set<string>(),
+      };
+      current.earned += topic.score;
+      current.max += topic.max;
+      current.itemCount += 1;
+      current.assessmentIds.add(assessment.id);
+      groups.set(key, current);
+    });
+    return groups;
+  }, new Map<string, { topicId: string; topicName: string; learningUnit: string; subjectId: string; subjectName: string; subjectCode: string; earned: number; max: number; itemCount: number; assessmentIds: Set<string> }>()).values()).map(topic => {
+    const pct = topic.max > 0 ? Math.round((topic.earned / topic.max) * 100) : null;
+    return {
+      ...topic,
+      pct,
+      assessmentCount: topic.assessmentIds.size,
+      status: pct === null ? "none" as const : pct >= 70 ? "strong" as const : pct >= 50 ? "developing" as const : "priority" as const,
+    };
+  }).filter(topic => topic.pct !== null).sort((a, b) => (a.pct ?? 0) - (b.pct ?? 0));
+  const priorityTopics = allYearsTopicAnalysis.filter(topic => topic.status === "priority").slice(0, 3);
+  const developingTopics = allYearsTopicAnalysis.filter(topic => topic.status === "developing").slice(0, 2);
+  const strengthTopics = [...allYearsTopicAnalysis].filter(topic => topic.status === "strong").sort((a, b) => (b.pct ?? 0) - (a.pct ?? 0)).slice(0, 3);
+  const teachingRecommendations = [
+    ...priorityTopics.map(topic => ({
+      tone: "priority" as const,
+      title: lang === "zh" ? `優先鞏固：${topic.topicName}` : `Priority reinforcement: ${topic.topicName}`,
+      body: lang === "zh"
+        ? `先以診斷題找出概念缺口，再用 2–3 道示範題分步重教；其後安排由易至難的短練習，並以一題退出卷確認理解。`
+        : `Use a short diagnostic to locate the misconception, re-teach with 2–3 worked examples, then use graduated practice and one exit-ticket question to check understanding.`,
+      topic,
+    })),
+    ...developingTopics.slice(0, priorityTopics.length === 0 ? 2 : 1).map(topic => ({
+      tone: "developing" as const,
+      title: lang === "zh" ? `鞏固提升：${topic.topicName}` : `Build fluency: ${topic.topicName}`,
+      body: lang === "zh"
+        ? `已有基礎但表現未穩定；安排混合題型練習，要求學生說明解題步驟，並在下一次小測前重做錯題。`
+        : `Foundation is present but not stable; use mixed-form practice, ask the student to explain each step, and revisit errors before the next quiz.`,
+      topic,
+    })),
+    ...strengthTopics.slice(0, 1).map(topic => ({
+      tone: "strong" as const,
+      title: lang === "zh" ? `延伸強項：${topic.topicName}` : `Extend strength: ${topic.topicName}`,
+      body: lang === "zh"
+        ? `可加入非例行或多步題，並邀請學生解釋策略或協助同儕；同時保留少量複習題以維持熟練度。`
+        : `Add non-routine or multi-step problems and invite strategy explanation or peer support, while retaining a small amount of review to sustain fluency.`,
+      topic,
+    })),
+  ];
 
   const trendIcon = caHistory.length >= 2
     ? (caHistory[caHistory.length - 1].pct! > caHistory[caHistory.length - 2].pct!
@@ -3237,11 +3310,13 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
       return `<section class="detail-section"><header class="detail-header"><div><h3>${escapeHtml(item.title)}${item.code ? ` (${escapeHtml(item.code)})` : ""}</h3><p>${escapeHtml(item.yearLabel)} · ${escapeHtml(item.subjectName)} (${escapeHtml(item.subjectCode)}) · ${escapeHtml(item.className)} · ${escapeHtml(item.nature)}${item.date ? ` · ${escapeHtml(item.date)}` : ""}</p></div><div class="assessment-result"><strong class="score-${item.pct !== null && item.pct >= 70 ? "good" : item.pct !== null && item.pct >= 50 ? "mid" : "low"}">${item.isAbsent ? "ABS" : `${item.total}/${item.max}`}</strong><span>${item.isAbsent ? (lang === "zh" ? "缺席" : "Absent") : `${item.pct}% · ${lang === "zh" ? "排名" : "Rank"} ${item.rank ?? "—"}/${item.classSize || "—"}`}</span></div></header><div class="detail-stats"><div><span>${lang === "zh" ? "班級平均" : "Class average"}</span><strong>${item.classAverage !== null ? `${item.classAverage.toFixed(1)}/${item.max}` : "—"}</strong></div><div><span>${lang === "zh" ? "相對班級差距" : "Gap vs class"}</span><strong class="${overallGap === null ? "muted" : overallGap >= 0 ? "score-good" : "score-low"}">${gapText}</strong></div><div><span>${lang === "zh" ? "已輸入題目" : "Items entered"}</span><strong>${item.questionDetails.filter(question => question.score !== null).length}/${item.questionDetails.length}</strong></div></div><table><thead><tr><th>${lang === "zh" ? "題號" : "Question"}</th><th>${lang === "zh" ? "個人得分" : "Student"}</th><th>${lang === "zh" ? "班級平均" : "Class avg"}</th><th>${lang === "zh" ? "差距" : "Gap"}</th><th>%</th></tr></thead><tbody>${questionRows}</tbody></table></section>`;
     }).join("");
     const currentTopicRows = topicAnalysis.filter(topic => topic.max > 0).map((topic, index) => `<tr class="${index % 2 ? "striped" : ""}"><td><strong>${escapeHtml(topic.name)}</strong></td><td class="center">${topic.earned}/${topic.max}</td><td class="center score-${topic.pct !== null && topic.pct >= 70 ? "good" : topic.pct !== null && topic.pct >= 50 ? "mid" : "low"}">${topic.pct !== null ? `${topic.pct}%` : "—"}</td></tr>`).join("");
+    const allYearsTopicRows = allYearsTopicAnalysis.map((topic, index) => `<tr class="${index % 2 ? "striped" : ""}"><td><strong>${escapeHtml(topic.topicName)}</strong><span class="subline">${escapeHtml(topic.subjectCode)} · ${escapeHtml(topic.learningUnit)} · ${topic.assessmentCount} ${lang === "zh" ? "項評估／" : "assessments / "}${topic.itemCount} ${lang === "zh" ? "題" : "items"}</span></td><td class="center">${topic.earned}/${topic.max}</td><td class="center score-${topic.status === "strong" ? "good" : topic.status === "developing" ? "mid" : "low"}">${topic.pct}%</td><td class="center">${topic.status === "strong" ? (lang === "zh" ? "強項" : "Strength") : topic.status === "developing" ? (lang === "zh" ? "需加強" : "Developing") : (lang === "zh" ? "優先鞏固" : "Priority")}</td></tr>`).join("");
+    const recommendationRows = teachingRecommendations.map(recommendation => `<div class="recommendation recommendation-${recommendation.tone}"><strong>${escapeHtml(recommendation.title)}</strong><p>${escapeHtml(recommendation.body)}</p><small>${escapeHtml(recommendation.topic.subjectCode)} · ${recommendation.topic.earned}/${recommendation.topic.max} · ${recommendation.topic.pct}% · ${recommendation.topic.assessmentCount} ${lang === "zh" ? "項評估" : "assessments"}</small></div>`).join("");
     const win = window.open("", "_blank");
     if (!win) { toast.error(lang === "zh" ? "無法開啟報告視窗，請允許彈出視窗。" : "Unable to open the report window. Please allow popups."); return; }
     win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(displayName)} — ${lang === "zh" ? "學生整體成績報告" : "Student Overall Performance Report"}</title><style>
-      *{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff;color:#1e293b;font-family:Arial,'Microsoft JhengHei','PingFang TC',sans-serif;font-size:11px;line-height:1.45}.document{width:210mm;min-height:297mm;margin:0 auto;padding:14mm 13mm 16mm;background:#fff}.header{border-bottom:3px solid #1d4ed8;padding-bottom:10px;margin-bottom:12px;display:flex;justify-content:space-between;gap:12px}.header h1{font-size:21px;color:#1d4ed8;margin:0 0 2px}.header p{margin:0;color:#64748b;font-size:9px}.align-right{text-align:right}.section{margin-top:14px;break-inside:avoid}.section-title{font-size:13px;font-weight:800;margin:0 0 7px;border-left:4px solid #2563eb;padding-left:8px}.snapshot{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:10px}.panel{border:1px solid #dbeafe;border-radius:7px;padding:8px;background:#fbfdff}.summary-stats,.detail-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.summary-stats>div,.detail-stats>div{border:1px solid #e2e8f0;border-radius:5px;padding:5px;text-align:center;background:#fff}.summary-stats span,.detail-stats span{display:block;font-size:8px;color:#64748b}.summary-stats strong{display:block;margin-top:1px;color:#1d4ed8;font-size:15px;font-family:monospace}.trend-chart{width:100%;height:145px;display:block}.subject-chip{display:inline-block;margin:2px;padding:2px 5px;background:#eff6ff;border-radius:4px;color:#334155;font-size:8px}.subject-chip small,.subline{color:#64748b}.subline{display:block;font-size:8px;font-weight:400;margin-top:1px}table{width:100%;border-collapse:collapse;font-size:9px}th{background:#1d4ed8;color:#fff;padding:5px 6px;text-align:left}td{padding:4px 6px;border-bottom:1px solid #e2e8f0}.striped td{background:#f8fafc}.center{text-align:center;font-family:monospace}.right{text-align:right;font-family:monospace}.muted{color:#94a3b8}.score-good{color:#16a34a!important}.score-mid{color:#d97706!important}.score-low{color:#dc2626!important}.detail-section{margin-top:12px;border:1px solid #bfdbfe;border-radius:7px;overflow:hidden;break-inside:avoid}.detail-header{display:flex;justify-content:space-between;gap:12px;padding:7px 9px;background:#eff6ff;border-bottom:1px solid #bfdbfe}.detail-header h3{margin:0;font-size:11px;color:#1e3a8a}.detail-header p{margin:2px 0 0;color:#475569;font-size:8px}.assessment-result{text-align:right}.assessment-result strong{display:block;font-size:13px;font-family:monospace}.assessment-result span{font-size:8px;color:#64748b}.detail-stats{padding:7px 9px;border-bottom:1px solid #e2e8f0}.detail-stats strong{display:block;font-size:10px;font-family:monospace;margin-top:1px}.footer{margin-top:16px;padding-top:7px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;color:#94a3b8;font-size:8px}@media print{@page{size:A4;margin:0}body{print-color-adjust:exact;-webkit-print-color-adjust:exact}.document{padding:14mm 13mm 16mm}.detail-section{break-inside:avoid}}
-    </style></head><body><main class="document"><header class="header"><div><h1>${lang === "zh" ? "學生整體成績報告" : "Student Overall Performance Report"}</h1><p>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(today)}</p></div><div class="align-right"><strong>${escapeHtml(displayName)}</strong><p>${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(student.classNo)} · ${escapeHtml(cls.name)} · ${escapeHtml(subjectName)} · ${escapeHtml(year.label)}</p></div></header><section class="section"><h2 class="section-title">${lang === "zh" ? "整體學業表現（跨學年／科目）" : "Overall Academic Performance (All Years / Subjects)"}</h2><div class="snapshot"><div class="panel"><div class="summary-stats"><div><span>${lang === "zh" ? "歷年平均" : "All-years avg"}</span><strong class="score-${allYearsAvgPct !== null && allYearsAvgPct >= 70 ? "good" : allYearsAvgPct !== null && allYearsAvgPct >= 50 ? "mid" : "low"}">${allYearsAvgPct !== null ? `${allYearsAvgPct}%` : "—"}</strong></div><div><span>${lang === "zh" ? "已評分項" : "Graded"}</span><strong>${gradedAllYearsAssessments.length}</strong></div><div><span>${lang === "zh" ? "涉及學年" : "Years"}</span><strong>${yearPerformance.length}</strong></div></div><p style="margin:7px 0 2px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "歷年評估趨勢" : "All-years assessment trend"}</p>${trendSvg}</div><div class="panel"><p style="margin:0 0 5px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "學年摘要" : "School-year summary"}</p><table><tbody>${yearRows || `<tr><td class="muted">${lang === "zh" ? "尚未有歷史資料。" : "No history yet."}</td></tr>`}</tbody></table><p style="margin:8px 0 3px;font-size:8px;font-weight:700;color:#64748b">${lang === "zh" ? "各學年／科目平均" : "Subject-by-year averages"}</p><div>${subjectRows || `<span class="muted">—</span>`}</div></div></div></section><section class="section"><h2 class="section-title">${lang === "zh" ? "評估總覽（跨學年）" : "Assessment Overview (All Years)"}</h2><table><thead><tr><th>${lang === "zh" ? "評估" : "Assessment"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th><th class="center">${lang === "zh" ? "排名" : "Rank"}</th></tr></thead><tbody>${assessmentRows || `<tr><td colspan="4" class="muted">—</td></tr>`}</tbody></table></section>${detailSections ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "每項評估逐題分析" : "Per-assessment Question Analysis"}</h2>${detailSections}</section>` : ""}${currentTopicRows ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "目前科目學習單元分析" : "Current Subject Learning Unit Analysis"}</h2><table><thead><tr><th>${lang === "zh" ? "學習單元" : "Learning unit"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th></tr></thead><tbody>${currentTopicRows}</tbody></table></section>` : ""}<footer class="footer"><span>${escapeHtml(displayName)} · ${lang === "zh" ? "跨學年整體報告" : "All-years overall report"}</span><span>${lang === "zh" ? "由 Maths Analytics 生成" : "Generated by Maths Analytics"}</span></footer></main><script>window.onload=()=>window.print();<\/script></body></html>`);
+      *{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff;color:#1e293b;font-family:Arial,'Microsoft JhengHei','PingFang TC',sans-serif;font-size:11px;line-height:1.45}.document{width:210mm;min-height:297mm;margin:0 auto;padding:14mm 13mm 16mm;background:#fff}.header{border-bottom:3px solid #1d4ed8;padding-bottom:10px;margin-bottom:12px;display:flex;justify-content:space-between;gap:12px}.header h1{font-size:21px;color:#1d4ed8;margin:0 0 2px}.header p{margin:0;color:#64748b;font-size:9px}.align-right{text-align:right}.section{margin-top:14px;break-inside:avoid}.section-title{font-size:13px;font-weight:800;margin:0 0 7px;border-left:4px solid #2563eb;padding-left:8px}.snapshot{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:10px}.panel{border:1px solid #dbeafe;border-radius:7px;padding:8px;background:#fbfdff}.summary-stats,.detail-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.summary-stats>div,.detail-stats>div{border:1px solid #e2e8f0;border-radius:5px;padding:5px;text-align:center;background:#fff}.summary-stats span,.detail-stats span{display:block;font-size:8px;color:#64748b}.summary-stats strong{display:block;margin-top:1px;color:#1d4ed8;font-size:15px;font-family:monospace}.trend-chart{width:100%;height:145px;display:block}.subject-chip{display:inline-block;margin:2px;padding:2px 5px;background:#eff6ff;border-radius:4px;color:#334155;font-size:8px}.subject-chip small,.subline{color:#64748b}.subline{display:block;font-size:8px;font-weight:400;margin-top:1px}table{width:100%;border-collapse:collapse;font-size:9px}th{background:#1d4ed8;color:#fff;padding:5px 6px;text-align:left}td{padding:4px 6px;border-bottom:1px solid #e2e8f0}.striped td{background:#f8fafc}.center{text-align:center;font-family:monospace}.right{text-align:right;font-family:monospace}.muted{color:#94a3b8}.score-good{color:#16a34a!important}.score-mid{color:#d97706!important}.score-low{color:#dc2626!important}.detail-section{margin-top:12px;border:1px solid #bfdbfe;border-radius:7px;overflow:hidden;break-inside:avoid}.detail-header{display:flex;justify-content:space-between;gap:12px;padding:7px 9px;background:#eff6ff;border-bottom:1px solid #bfdbfe}.detail-header h3{margin:0;font-size:11px;color:#1e3a8a}.detail-header p{margin:2px 0 0;color:#475569;font-size:8px}.assessment-result{text-align:right}.assessment-result strong{display:block;font-size:13px;font-family:monospace}.assessment-result span{font-size:8px;color:#64748b}.detail-stats{padding:7px 9px;border-bottom:1px solid #e2e8f0}.detail-stats strong{display:block;font-size:10px;font-family:monospace;margin-top:1px}.topic-table{margin-top:4px}.recommendations{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:7px}.recommendation{border:1px solid #e2e8f0;border-radius:5px;padding:6px;background:#fff;font-size:8px}.recommendation strong{display:block;font-size:9px}.recommendation p{margin:3px 0;color:#475569;line-height:1.45}.recommendation small{color:#64748b}.recommendation-priority{border-color:#fecaca;background:#fef2f2}.recommendation-priority strong{color:#b91c1c}.recommendation-developing{border-color:#fde68a;background:#fffbeb}.recommendation-developing strong{color:#b45309}.recommendation-strong{border-color:#bbf7d0;background:#f0fdf4}.recommendation-strong strong{color:#15803d}.footer{margin-top:16px;padding-top:7px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;color:#94a3b8;font-size:8px}@media print{@page{size:A4;margin:0}body{print-color-adjust:exact;-webkit-print-color-adjust:exact}.document{padding:14mm 13mm 16mm}.detail-section{break-inside:avoid}}
+    </style></head><body><main class="document"><header class="header"><div><h1>${lang === "zh" ? "學生整體成績報告" : "Student Overall Performance Report"}</h1><p>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(today)}</p></div><div class="align-right"><strong>${escapeHtml(displayName)}</strong><p>${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(student.classNo)} · ${escapeHtml(cls.name)} · ${escapeHtml(subjectName)} · ${escapeHtml(year.label)}</p></div></header><section class="section"><h2 class="section-title">${lang === "zh" ? "整體學業表現（跨學年／科目）" : "Overall Academic Performance (All Years / Subjects)"}</h2><div class="snapshot"><div class="panel"><div class="summary-stats"><div><span>${lang === "zh" ? "歷年平均" : "All-years avg"}</span><strong class="score-${allYearsAvgPct !== null && allYearsAvgPct >= 70 ? "good" : allYearsAvgPct !== null && allYearsAvgPct >= 50 ? "mid" : "low"}">${allYearsAvgPct !== null ? `${allYearsAvgPct}%` : "—"}</strong></div><div><span>${lang === "zh" ? "已評分項" : "Graded"}</span><strong>${gradedAllYearsAssessments.length}</strong></div><div><span>${lang === "zh" ? "涉及學年" : "Years"}</span><strong>${yearPerformance.length}</strong></div></div><p style="margin:7px 0 2px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "歷年評估趨勢" : "All-years assessment trend"}</p>${trendSvg}</div><div class="panel"><p style="margin:0 0 5px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "學年摘要" : "School-year summary"}</p><table><tbody>${yearRows || `<tr><td class="muted">${lang === "zh" ? "尚未有歷史資料。" : "No history yet."}</td></tr>`}</tbody></table><p style="margin:8px 0 3px;font-size:8px;font-weight:700;color:#64748b">${lang === "zh" ? "各學年／科目平均" : "Subject-by-year averages"}</p><div>${subjectRows || `<span class="muted">—</span>`}</div></div></div></section>${allYearsTopicRows ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "課題強弱分析及教學建議（跨學年）" : "Topic Strengths, Needs & Teaching Recommendations (All Years)"}</h2><p class="muted" style="margin:0 0 6px;font-size:8px">${lang === "zh" ? "依逐題課題標記的得分自動生成；結果包含已覆蓋的評估及題目數。" : "Auto-generated from question-level topic tags; evidence includes the assessments and items covered."}</p><table class="topic-table"><thead><tr><th>${lang === "zh" ? "課題" : "Topic"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th><th class="center">${lang === "zh" ? "狀態" : "Status"}</th></tr></thead><tbody>${allYearsTopicRows}</tbody></table>${recommendationRows ? `<div class="recommendations">${recommendationRows}</div>` : ""}</section>` : ""}<section class="section"><h2 class="section-title">${lang === "zh" ? "評估總覽（跨學年）" : "Assessment Overview (All Years)"}</h2><table><thead><tr><th>${lang === "zh" ? "評估" : "Assessment"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th><th class="center">${lang === "zh" ? "排名" : "Rank"}</th></tr></thead><tbody>${assessmentRows || `<tr><td colspan="4" class="muted">—</td></tr>`}</tbody></table></section>${detailSections ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "每項評估逐題分析" : "Per-assessment Question Analysis"}</h2>${detailSections}</section>` : ""}${currentTopicRows ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "目前科目學習單元分析" : "Current Subject Learning Unit Analysis"}</h2><table><thead><tr><th>${lang === "zh" ? "學習單元" : "Learning unit"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th></tr></thead><tbody>${currentTopicRows}</tbody></table></section>` : ""}<footer class="footer"><span>${escapeHtml(displayName)} · ${lang === "zh" ? "跨學年整體報告" : "All-years overall report"}</span><span>${lang === "zh" ? "由 Maths Analytics 生成" : "Generated by Maths Analytics"}</span></footer></main><script>window.onload=()=>window.print();<\/script></body></html>`);
     win.document.close();
   };
 
@@ -3326,6 +3401,29 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                 </div>
                 <div className="border border-slate-100 rounded-lg p-3"><p className="text-xs font-bold text-slate-600 mb-2">{lang === "zh" ? "學年摘要" : "School-year summary"}</p><div className="space-y-2">{yearPerformance.map(item => <div key={item.yearLabel} className="flex items-center justify-between gap-3 border-b border-slate-100 last:border-0 pb-2 last:pb-0"><div><p className="text-xs font-semibold text-slate-700">{item.yearLabel}</p><p className="text-[11px] text-slate-500">{item.subjects} · {item.assessments} {lang === "zh" ? "項評估" : "assessments"}</p></div><span className={cn("font-mono font-bold", item.pct >= 70 ? "text-green-600" : item.pct >= 50 ? "text-amber-600" : "text-red-600")}>{item.pct}%</span></div>)}</div></div>
               </div>
+            </div>
+          )}
+
+          {allYearsTopicAnalysis.length > 0 && (
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-bold text-slate-800">{lang === "zh" ? "強項、弱項與教學建議（跨學年課題分析）" : "Strengths, Needs & Teaching Recommendations (All-years Topic Analysis)"}</p>
+                  <p className="text-xs text-slate-500">{lang === "zh" ? "依逐題標記的課題得分自動生成；紅色為優先鞏固、黃色為需加強、綠色為可延伸強項。" : "Auto-generated from question-level topic tags: red = priority, amber = developing, green = extendable strength."}</p>
+                </div>
+                <div className="text-xs text-slate-500"><b className="text-red-600">{priorityTopics.length}</b> {lang === "zh" ? "優先" : "priority"} · <b className="text-amber-600">{developingTopics.length}</b> {lang === "zh" ? "需加強" : "developing"} · <b className="text-green-600">{strengthTopics.length}</b> {lang === "zh" ? "強項" : "strengths"}</div>
+              </div>
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 p-3">
+                <div className="rounded-lg border border-green-200 bg-green-50/50 p-3">
+                  <p className="text-xs font-bold text-green-800 mb-2">{lang === "zh" ? "可延伸的強項" : "Strengths to extend"}</p>
+                  {strengthTopics.length === 0 ? <p className="text-xs text-slate-400">{lang === "zh" ? "需累積更多有課題標記的成績。" : "More topic-tagged scores are needed."}</p> : <div className="space-y-2">{strengthTopics.map(topic => <div key={`${topic.subjectId}-${topic.topicId}`} className="flex items-center justify-between gap-3 border-b border-green-100 last:border-0 pb-2 last:pb-0"><div className="min-w-0"><p className="text-xs font-semibold text-slate-800 truncate">{topic.topicName}</p><p className="text-[11px] text-slate-500">{topic.subjectCode} · {topic.learningUnit} · {topic.assessmentCount} {lang === "zh" ? "項評估／" : "assessments / "}{topic.itemCount} {lang === "zh" ? "題" : "items"}</p></div><div className="text-right shrink-0"><p className="font-mono text-sm font-bold text-green-600">{topic.pct}%</p><p className="text-[11px] font-mono text-slate-500">{topic.earned}/{topic.max}</p></div></div>)}</div>}
+                </div>
+                <div className="rounded-lg border border-red-200 bg-red-50/40 p-3">
+                  <p className="text-xs font-bold text-red-800 mb-2">{lang === "zh" ? "優先鞏固與需加強課題" : "Priority reinforcement & developing topics"}</p>
+                  {priorityTopics.length === 0 && developingTopics.length === 0 ? <p className="text-xs text-slate-400">{lang === "zh" ? "目前未見低於 70% 的已標記課題。" : "No topic-tagged result below 70% currently."}</p> : <div className="space-y-2">{[...priorityTopics, ...developingTopics].map(topic => <div key={`${topic.subjectId}-${topic.topicId}`} className="flex items-center justify-between gap-3 border-b border-red-100 last:border-0 pb-2 last:pb-0"><div className="min-w-0"><div className="flex items-center gap-1.5"><p className="text-xs font-semibold text-slate-800 truncate">{topic.topicName}</p><Badge className={cn("text-[9px] h-4", topic.status === "priority" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700")}>{topic.status === "priority" ? (lang === "zh" ? "優先" : "Priority") : (lang === "zh" ? "需加強" : "Developing")}</Badge></div><p className="text-[11px] text-slate-500">{topic.subjectCode} · {topic.learningUnit} · {topic.assessmentCount} {lang === "zh" ? "項評估／" : "assessments / "}{topic.itemCount} {lang === "zh" ? "題" : "items"}</p></div><div className="text-right shrink-0"><p className={cn("font-mono text-sm font-bold", topic.status === "priority" ? "text-red-600" : "text-amber-600")}>{topic.pct}%</p><p className="text-[11px] font-mono text-slate-500">{topic.earned}/{topic.max}</p></div></div>)}</div>}
+                </div>
+              </div>
+              {teachingRecommendations.length > 0 && <div className="border-t border-slate-100 p-3 bg-slate-50/40"><p className="text-xs font-bold text-slate-700 mb-2">{lang === "zh" ? "針對性教學建議摘要" : "Targeted teaching summary"}</p><div className="grid grid-cols-1 lg:grid-cols-3 gap-2">{teachingRecommendations.map((recommendation, index) => <div key={`${recommendation.topic.topicId}-${index}`} className={cn("rounded-lg border p-3", recommendation.tone === "priority" ? "border-red-200 bg-red-50/60" : recommendation.tone === "developing" ? "border-amber-200 bg-amber-50/60" : "border-green-200 bg-green-50/60")}><p className={cn("text-xs font-bold", recommendation.tone === "priority" ? "text-red-800" : recommendation.tone === "developing" ? "text-amber-800" : "text-green-800")}>{recommendation.title}</p><p className="text-[11px] leading-relaxed text-slate-600 mt-1">{recommendation.body}</p><p className="text-[10px] text-slate-500 mt-2">{recommendation.topic.subjectCode} · {recommendation.topic.earned}/{recommendation.topic.max} · {recommendation.topic.pct}% · {recommendation.topic.assessmentCount} {lang === "zh" ? "項評估" : "assessments"}</p></div>)}</div></div>}
             </div>
           )}
 
