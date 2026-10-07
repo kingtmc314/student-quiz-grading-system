@@ -36,9 +36,9 @@ import {
 import { nanoid } from "nanoid";
 import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/markSheetParser";
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
-import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry } from "@/contexts/DataContext";
+import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.11.1";
+const APP_VERSION = "v1.12.0";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -241,6 +241,124 @@ function termLabel(term: Term, lang: string): string {
   return lang === "zh" ? "全年" : "Full Year";
 }
 
+// ─── Reusable: Assessment Detail Analysis ─────────────────────────────────────
+// Read-only calculations based on the already-loaded class state. This deliberately
+// never writes to Supabase, so teachers can inspect completeness safely.
+function AssessmentDetailAnalysis({
+  assessment,
+  students,
+  nature,
+  lang,
+}: {
+  assessment: Assessment;
+  students: Student[];
+  nature?: AssessmentNature;
+  lang: string;
+}) {
+  const questions = assessment.markSheet.filter(item => !item.isSection);
+  const maxTotal = getAssessmentMax(assessment);
+  const nonAbsentEntries = assessment.scores.filter(entry => !entry.isAbsent);
+  const absentCount = assessment.scores.filter(entry => entry.isAbsent).length;
+  const totals = students
+    .map(student => getScoreTotal(assessment, student.id))
+    .filter((score): score is number => score !== null);
+  const average = totals.length > 0 ? totals.reduce((sum, score) => sum + score, 0) / totals.length : null;
+  const highest = totals.length > 0 ? Math.max(...totals) : null;
+  const lowest = totals.length > 0 ? Math.min(...totals) : null;
+  const gradedCount = totals.length;
+  const assessmentName = lang === "zh" && assessment.titleCht ? assessment.titleCht : assessment.title;
+  const natureName = nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified");
+
+  const questionStats = questions.map(item => {
+    const values = nonAbsentEntries
+      .map(entry => getScoreMap(assessment, entry.studentId)[item.id])
+      .filter((score): score is number => typeof score === "number");
+    const avg = values.length > 0 ? values.reduce((sum, score) => sum + score, 0) / values.length : null;
+    const pct = avg !== null && item.maxMark > 0 ? Math.round((avg / item.maxMark) * 100) : null;
+    const fullMarkCount = values.filter(score => score === item.maxMark).length;
+    return { ...item, values, avg, pct, fullMarkCount };
+  });
+  const scoredValueCount = questionStats.reduce((sum, item) => sum + item.values.length, 0);
+  const completionPct = students.length > 0 && questions.length > 0
+    ? Math.round((scoredValueCount / (students.length * questions.length)) * 100)
+    : 0;
+
+  const statTone = (pct: number | null) => pct === null
+    ? "text-slate-400"
+    : pct >= 70 ? "text-emerald-600" : pct >= 50 ? "text-amber-600" : "text-red-600";
+
+  return (
+    <details className="rounded-xl border border-indigo-100 bg-indigo-50/40 overflow-hidden group">
+      <summary className="list-none cursor-pointer px-3 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 hover:bg-indigo-50 transition-colors">
+        <div className="flex items-center gap-2 min-w-0 mr-auto">
+          <BarChart2 className="w-4 h-4 text-indigo-600 shrink-0" />
+          <span className="text-sm font-bold text-slate-700 truncate">{lang === "zh" ? "評估細項分析" : "Assessment Detail Analysis"}</span>
+          <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded border", nature?.isExam ? "border-red-200 bg-red-50 text-red-600" : "border-blue-200 bg-blue-50 text-blue-600")}>{natureName}</span>
+        </div>
+        <span className="text-xs text-slate-500">{assessmentName}</span>
+        <span className="text-xs font-mono font-bold text-indigo-700">{gradedCount}/{students.length} {lang === "zh" ? "已評分" : "graded"}</span>
+        <ChevronDown className="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" />
+      </summary>
+
+      <div className="border-t border-indigo-100 bg-white p-3 space-y-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+          {[
+            { label: lang === "zh" ? "評分題目" : "Mark items", value: String(questions.length), tone: "text-slate-700" },
+            { label: lang === "zh" ? "最高總分" : "Total marks", value: maxTotal > 0 ? String(maxTotal) : "—", tone: "text-slate-700" },
+            { label: lang === "zh" ? "已評分" : "Graded", value: `${gradedCount}/${students.length}`, tone: "text-blue-600" },
+            { label: lang === "zh" ? "輸入完整度" : "Entry completion", value: `${completionPct}%`, tone: completionPct === 100 ? "text-emerald-600" : "text-amber-600" },
+            { label: lang === "zh" ? "班級平均" : "Class average", value: average !== null ? `${average.toFixed(1)}/${maxTotal}` : "—", tone: statTone(average !== null && maxTotal > 0 ? Math.round((average / maxTotal) * 100) : null) },
+            { label: lang === "zh" ? "缺席" : "Absent", value: String(absentCount), tone: absentCount > 0 ? "text-orange-600" : "text-slate-500" },
+          ].map(stat => (
+            <div key={stat.label} className="rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 truncate">{stat.label}</p>
+              <p className={cn("mt-0.5 text-base font-mono font-black", stat.tone)}>{stat.value}</p>
+            </div>
+          ))}
+        </div>
+
+        {questions.length > 0 ? (
+          <div>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-bold text-slate-600">{lang === "zh" ? "逐題表現（按班級平均）" : "Question-by-question performance (class average)"}</p>
+              <p className="text-[10px] text-slate-400">{lang === "zh" ? "綠 ≥70% · 黃 50–69% · 紅 <50%" : "Green ≥70% · Amber 50–69% · Red <50%"}</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 max-h-64 overflow-y-auto pr-1">
+              {questionStats.map(item => {
+                const progressColor = item.pct === null ? "bg-slate-300" : item.pct >= 70 ? "bg-emerald-500" : item.pct >= 50 ? "bg-amber-500" : "bg-red-500";
+                return (
+                  <div key={item.id} className="rounded-lg border border-slate-100 p-2.5 bg-white">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-mono font-bold text-xs text-slate-700">{item.label}</span>
+                      <span className={cn("font-mono font-bold text-xs", statTone(item.pct))}>{item.avg !== null ? `${item.avg.toFixed(1)}/${item.maxMark} (${item.pct}%)` : "—"}</span>
+                    </div>
+                    <div className="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                      <div className={cn("h-full rounded-full transition-[width] duration-200", progressColor)} style={{ width: `${item.pct ?? 0}%` }} />
+                    </div>
+                    <div className="mt-1.5 flex justify-between text-[10px] text-slate-400">
+                      <span>{item.values.length}/{students.length} {lang === "zh" ? "已輸入" : "entered"}</span>
+                      <span>{item.fullMarkCount} {lang === "zh" ? "滿分" : "full marks"}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-400">{lang === "zh" ? "尚未設定評分表，暫未能提供逐題分析。" : "No mark sheet is configured yet, so question analysis is unavailable."}</p>
+        )}
+
+        {highest !== null && lowest !== null && (
+          <p className="text-[11px] text-slate-500">
+            {lang === "zh" ? "已評分學生總分範圍：" : "Graded-student total range: "}
+            <span className="font-mono font-bold text-slate-700">{lowest}–{highest}/{maxTotal || "—"}</span>
+          </p>
+        )}
+      </div>
+    </details>
+  );
+}
+
 // ─── Tab: Student Management ──────────────────────────────────────────────────
 function StudentMgmtTab({
   yearId, subjectId, classId,
@@ -307,6 +425,27 @@ function StudentMgmtTab({
   const availableSubjects = subjects.filter(s => !linkedSubjectIds.has(s.id));
 
   const sortedStudents = cls ? [...cls.students].sort((a, b) => a.classNo.localeCompare(b.classNo, undefined, { numeric: true })) : [];
+  const databaseOverview = schoolYears.map(schoolYear => {
+    const classes = schoolYear.subjects.flatMap(yearSubject => yearSubject.classes);
+    const assessments = classes.flatMap(classItem => classItem.assessments);
+    const scoreCount = assessments.reduce((assessmentTotal, assessment) => assessmentTotal + assessment.scores.reduce((entryTotal, entry) => {
+      if (entry.isAbsent) return entryTotal;
+      const values = Array.isArray(entry.scores)
+        ? entry.scores.length
+        : Object.values(entry.scores).filter(value => value !== null && value !== undefined).length;
+      return entryTotal + values;
+    }, 0), 0);
+    const markItemCount = assessments.reduce((total, assessment) => total + assessment.markSheet.filter(item => !item.isSection).length, 0);
+    return {
+      id: schoolYear.id,
+      label: schoolYear.label,
+      classes: classes.length,
+      students: classes.reduce((total, classItem) => total + classItem.students.length, 0),
+      assessments: assessments.length,
+      markItems: markItemCount,
+      scores: scoreCount,
+    };
+  });
 
   const handleAddYear = () => {
     if (!newYearLabel.trim()) return;
@@ -372,6 +511,56 @@ function StudentMgmtTab({
   return (
     <div className="h-full flex flex-col gap-4 overflow-y-auto p-4">
       <h2 className="text-xl font-bold text-slate-800">{lang === "zh" ? "學生管理" : "Student Management"}</h2>
+
+      {/* ── Read-only database completeness overview ── */}
+      <section className="rounded-xl border border-blue-100 bg-gradient-to-br from-blue-50 via-white to-indigo-50 p-4" aria-labelledby="database-overview-title">
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+          <div className="flex items-start gap-2.5">
+            <div className="mt-0.5 w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0">
+              <Database className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 id="database-overview-title" className="text-sm font-bold text-slate-800">{lang === "zh" ? "資料庫狀態總覽" : "Database Status Overview"}</h3>
+              <p className="text-xs text-slate-500 mt-0.5">{lang === "zh" ? "按學年即時計算；僅供核對資料完整性，不會更改任何紀錄。" : "Live per-school-year counts for data checks only — no records are changed."}</p>
+            </div>
+          </div>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-[11px] font-bold text-emerald-700">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            {lang === "zh" ? "已同步資料" : "Synced data"}
+          </span>
+        </div>
+
+        {databaseOverview.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-white/80 px-3 py-4 text-center text-xs text-slate-400">{t("noData")}</div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {databaseOverview.map(item => (
+              <div key={item.id} className={cn("rounded-xl border p-3 transition-colors", item.id === yearId ? "border-blue-300 bg-white shadow-sm" : "border-slate-200 bg-white/80") }>
+                <div className="flex items-center justify-between gap-2 mb-2.5">
+                  <div className="flex items-center gap-2">
+                    <CalendarDays className="w-4 h-4 text-blue-600" />
+                    <span className="font-mono font-bold text-sm text-slate-800">{item.label}</span>
+                  </div>
+                  <span className="text-[10px] font-medium text-slate-400">{item.classes} {lang === "zh" ? "班別" : "classes"}</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {[
+                    { label: lang === "zh" ? "學生" : "Students", value: item.students, tone: "text-blue-700" },
+                    { label: lang === "zh" ? "評估" : "Assessments", value: item.assessments, tone: "text-violet-700" },
+                    { label: lang === "zh" ? "評分題目" : "Mark items", value: item.markItems, tone: "text-amber-700" },
+                    { label: lang === "zh" ? "分數筆數" : "Score records", value: item.scores, tone: "text-emerald-700" },
+                  ].map(metric => (
+                    <div key={metric.label} className="rounded-lg bg-slate-50 px-2.5 py-2 border border-slate-100">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 truncate">{metric.label}</p>
+                      <p className={cn("mt-0.5 text-lg leading-none font-mono font-black", metric.tone)}>{metric.value.toLocaleString()}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {/* ── Row 1: School Year + Subject + Class selectors ── */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -975,6 +1164,17 @@ function GradingTab({
           </div>
         )}
       </div>
+
+      {assessment && (
+        <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/60">
+          <AssessmentDetailAnalysis
+            assessment={assessment}
+            students={sortedStudents}
+            nature={natures.find(item => item.id === assessment.natureId)}
+            lang={lang}
+          />
+        </div>
+      )}
 
       {!assessment ? (
         <div className="flex-1 flex items-center justify-center">
