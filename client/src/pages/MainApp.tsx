@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.12.0";
+const APP_VERSION = "v1.13.0";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -357,6 +357,88 @@ function AssessmentDetailAnalysis({
       </div>
     </details>
   );
+}
+
+async function generateAssessmentPdf({
+  assessment,
+  students,
+  yearLabel,
+  className,
+  subjectName,
+  natureName,
+  assessmentTitle,
+  lang,
+}: {
+  assessment: Assessment;
+  students: Student[];
+  yearLabel: string;
+  className: string;
+  subjectName: string;
+  natureName: string;
+  assessmentTitle: string;
+  lang: string;
+}) {
+  const escapeHtml = (value: string | number) => String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+  const questions = assessment.markSheet.filter(item => !item.isSection);
+  const totalMarks = getAssessmentMax(assessment);
+  const rows = students.map(student => {
+    const entry = assessment.scores.find(score => score.studentId === student.id);
+    const isAbsent = entry?.isAbsent ?? false;
+    const total = isAbsent ? null : getScoreTotal(assessment, student.id);
+    const pct = total !== null && totalMarks > 0 ? Math.round((total / totalMarks) * 100) : null;
+    return { student, isAbsent, total, pct };
+  });
+  const gradedRows = rows.filter((row): row is typeof row & { total: number } => row.total !== null);
+  const average = gradedRows.length > 0 ? gradedRows.reduce((sum, row) => sum + row.total, 0) / gradedRows.length : null;
+  const absentCount = rows.filter(row => row.isAbsent).length;
+  const questionRows = questions.map(item => {
+    const scores = assessment.scores.filter(entry => !entry.isAbsent)
+      .map(entry => getScoreMap(assessment, entry.studentId)[item.id])
+      .filter((score): score is number => typeof score === "number");
+    const averageScore = scores.length > 0 ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null;
+    const pct = averageScore !== null && item.maxMark > 0 ? Math.round((averageScore / item.maxMark) * 100) : null;
+    return { label: item.label, max: item.maxMark, entered: scores.length, fullMarks: scores.filter(score => score === item.maxMark).length, averageScore, pct };
+  });
+  const expectedScores = students.length * questions.length;
+  const completion = expectedScores > 0 ? Math.round((questionRows.reduce((sum, item) => sum + item.entered, 0) / expectedScores) * 100) : 0;
+  const colorForScore = (pct: number | null) => pct === null ? "#94a3b8" : pct >= 70 ? "#059669" : pct >= 50 ? "#d97706" : "#dc2626";
+  const report = document.createElement("div");
+  const generatedAt = new Date().toLocaleString(lang === "zh" ? "zh-HK" : "en-GB");
+
+  report.style.cssText = "position:fixed;left:-10000px;top:0;width:794px;background:#fff;color:#1e293b;font-family:Arial,'Microsoft JhengHei','PingFang TC',sans-serif;font-size:12px;line-height:1.45;padding:32px;";
+  report.innerHTML = `
+    <style>
+      .pdf-header{border-bottom:3px solid #2563eb;padding-bottom:12px;margin-bottom:16px}.pdf-title{margin:0;color:#1d4ed8;font-size:24px;font-weight:800}.pdf-subtitle{margin:4px 0 0;color:#64748b}.pdf-meta{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 18px;margin-bottom:18px}.pdf-meta-item{border-bottom:1px solid #e2e8f0;padding-bottom:5px}.pdf-label{font-size:10px;letter-spacing:.04em;font-weight:700;color:#64748b;text-transform:uppercase}.pdf-value{font-weight:700;margin-top:2px}.pdf-section{margin-top:20px;page-break-inside:avoid}.pdf-heading{margin:0 0 8px;border-left:4px solid #2563eb;padding-left:8px;font-size:14px}.pdf-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.pdf-stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;padding:8px}.pdf-stat-value{margin-top:3px;font-size:17px;font-family:monospace;font-weight:800}.pdf-table{border-collapse:collapse;width:100%;font-size:10px}.pdf-table th{background:#1d4ed8;color:#fff;padding:6px 7px;text-align:left}.pdf-table td{padding:5px 7px;border-bottom:1px solid #e2e8f0}.pdf-table tr:nth-child(even) td{background:#f8fafc}.pdf-number{text-align:right;font-family:monospace}.pdf-footer{margin-top:20px;padding-top:8px;border-top:1px solid #e2e8f0;color:#94a3b8;font-size:9px;display:flex;justify-content:space-between;gap:12px}
+    </style>
+    <header class="pdf-header"><h1 class="pdf-title">${lang === "zh" ? "評估細項分析報告" : "Assessment Detail Report"}</h1><p class="pdf-subtitle">${escapeHtml(assessmentTitle)}</p></header>
+    <div class="pdf-meta">
+      <div class="pdf-meta-item"><div class="pdf-label">${lang === "zh" ? "學年" : "School Year"}</div><div class="pdf-value">${escapeHtml(yearLabel)}</div></div>
+      <div class="pdf-meta-item"><div class="pdf-label">${lang === "zh" ? "班別" : "Class"}</div><div class="pdf-value">${escapeHtml(className)}</div></div>
+      <div class="pdf-meta-item"><div class="pdf-label">${lang === "zh" ? "科目" : "Subject"}</div><div class="pdf-value">${escapeHtml(subjectName)}</div></div>
+      <div class="pdf-meta-item"><div class="pdf-label">${lang === "zh" ? "評估類型" : "Assessment Type"}</div><div class="pdf-value">${escapeHtml(natureName)}${assessment.date ? ` · ${escapeHtml(assessment.date)}` : ""}</div></div>
+    </div>
+    <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "整體概況" : "Overview"}</h2><div class="pdf-stats">
+      <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "評分題目" : "Mark Items"}</div><div class="pdf-stat-value">${questions.length}</div></div>
+      <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "最高總分" : "Total Marks"}</div><div class="pdf-stat-value">${totalMarks || "—"}</div></div>
+      <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "已評分" : "Graded"}</div><div class="pdf-stat-value">${gradedRows.length}/${students.length}</div></div>
+      <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "輸入完整度" : "Entry Completion"}</div><div class="pdf-stat-value" style="color:${completion === 100 ? "#059669" : "#d97706"}">${completion}%</div></div>
+      <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "班級平均" : "Class Average"}</div><div class="pdf-stat-value" style="color:${colorForScore(average !== null && totalMarks > 0 ? Math.round((average / totalMarks) * 100) : null)}">${average !== null ? `${average.toFixed(1)}/${totalMarks}` : "—"}</div></div>
+      <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "缺席" : "Absent"}</div><div class="pdf-stat-value" style="color:${absentCount > 0 ? "#ea580c" : "#475569"}">${absentCount}</div></div>
+    </div></section>
+    <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "逐題表現" : "Question Analysis"}</h2>${questions.length > 0 ? `<table class="pdf-table"><thead><tr><th>${lang === "zh" ? "題號" : "Question"}</th><th class="pdf-number">${lang === "zh" ? "平均" : "Average"}</th><th class="pdf-number">%</th><th class="pdf-number">${lang === "zh" ? "已輸入" : "Entered"}</th><th class="pdf-number">${lang === "zh" ? "滿分人數" : "Full Marks"}</th></tr></thead><tbody>${questionRows.map(item => `<tr><td><strong>${escapeHtml(item.label)}</strong> <span style="color:#94a3b8">/${item.max}</span></td><td class="pdf-number">${item.averageScore !== null ? `${item.averageScore.toFixed(1)}/${item.max}` : "—"}</td><td class="pdf-number" style="color:${colorForScore(item.pct)};font-weight:700">${item.pct !== null ? `${item.pct}%` : "—"}</td><td class="pdf-number">${item.entered}/${students.length}</td><td class="pdf-number">${item.fullMarks}</td></tr>`).join("")}</tbody></table>` : `<p style="color:#94a3b8">${lang === "zh" ? "尚未設定評分表。" : "No mark sheet configured."}</p>`}</section>
+    <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "學生總分" : "Student Totals"}</h2><table class="pdf-table"><thead><tr><th>${lang === "zh" ? "班號" : "Class No."}</th><th>${lang === "zh" ? "學生姓名" : "Student"}</th><th class="pdf-number">${lang === "zh" ? "得分" : "Score"}</th><th class="pdf-number">%</th><th>${lang === "zh" ? "狀態" : "Status"}</th></tr></thead><tbody>${rows.map(row => { const studentName = lang === "zh" && row.student.nameCht ? row.student.nameCht : row.student.name; const status = row.isAbsent ? (lang === "zh" ? "缺席" : "Absent") : row.total !== null ? (lang === "zh" ? "已評分" : "Graded") : (lang === "zh" ? "未輸入" : "Not entered"); return `<tr><td>${escapeHtml(row.student.classNo)}</td><td>${escapeHtml(studentName)}</td><td class="pdf-number">${row.isAbsent ? "ABS" : row.total !== null ? `${row.total}/${totalMarks}` : "—"}</td><td class="pdf-number" style="color:${colorForScore(row.pct)};font-weight:700">${row.pct !== null ? `${row.pct}%` : "—"}</td><td>${status}</td></tr>`; }).join("")}</tbody></table></section>
+    <footer class="pdf-footer"><span>${escapeHtml(yearLabel)} · ${escapeHtml(className)} · ${escapeHtml(assessmentTitle)}</span><span>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(generatedAt)}</span></footer>`;
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) throw new Error(lang === "zh" ? "無法開啟報告視窗，請允許彈出視窗。" : "Unable to open the report window. Please allow popups.");
+  printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(assessmentTitle)} — PDF</title><style>body{margin:0;background:#fff}@media print{@page{size:A4;margin:9mm}body{print-color-adjust:exact;-webkit-print-color-adjust:exact}.pdf-section{break-inside:avoid}}</style></head><body>${report.innerHTML}</body></html>`);
+  printWindow.document.close();
+  printWindow.focus();
+  window.setTimeout(() => printWindow.print(), 300);
 }
 
 // ─── Tab: Student Management ──────────────────────────────────────────────────
@@ -943,6 +1025,8 @@ function GradingTab({
   const [editNatureId, setEditNatureId] = useState("");
   const [editTeacherId, setEditTeacherId] = useState("");
   const [editDate, setEditDate] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [isGeneratingAssessmentPdf, setIsGeneratingAssessmentPdf] = useState(false);
 
   const assessment = yearId && subjectId && classId && assessmentId ? getAssessment(yearId, subjectId, classId, assessmentId) : undefined;
   const globalSubject = subjectId ? getGlobalSubject(subjectId) : undefined;
@@ -1019,8 +1103,6 @@ function GradingTab({
     setDraftScores(prev => ({ ...prev, [itemId]: val }));
     setDirty(true);
   };
-
-  const [isSaving, setIsSaving] = useState(false);
 
   const handleSave = async () => {
     if (!selectedStudentId || !yearId || !subjectId || !classId || !assessmentId) return;
@@ -1111,11 +1193,34 @@ function GradingTab({
   };
 
   const assessTitle = assessment ? (lang === "zh" && assessment.titleCht ? assessment.titleCht : assessment.title) : "";
+  const handleGenerateAssessmentPdf = async () => {
+    if (!assessment) return;
+    setIsGeneratingAssessmentPdf(true);
+    const nature = natures.find(item => item.id === assessment.natureId);
+    try {
+      await generateAssessmentPdf({
+        assessment,
+        students: sortedStudents,
+        yearLabel: year.label,
+        className: cls.name,
+        subjectName: lang === "zh" && subject.nameCht ? subject.nameCht : subject.name,
+        natureName: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"),
+        assessmentTitle: `${assessment.code ? `[${assessment.code}] ` : ""}${assessTitle}`,
+        lang,
+      });
+      toast.success(lang === "zh" ? "報告已開啟，請在列印視窗選擇「另存為 PDF」" : "Report opened — choose “Save as PDF” in the print dialog.");
+    } catch (error) {
+      console.error("Assessment PDF generation failed", error);
+      toast.error(lang === "zh" ? "PDF 生成失敗，請再試一次" : "PDF generation failed. Please try again.");
+    } finally {
+      setIsGeneratingAssessmentPdf(false);
+    }
+  };
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full min-h-0 flex flex-col overflow-y-auto md:overflow-hidden">
       {/* Assessment selector bar */}
-      <div className="px-4 py-2.5 border-b border-slate-200 bg-slate-50 flex items-center gap-3 flex-wrap">
+      <div className="px-3 sm:px-4 py-2.5 border-b border-slate-200 bg-slate-50 flex items-center gap-2 sm:gap-3 flex-wrap">
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <span className="text-xs font-bold text-slate-500 shrink-0">{t("assessment")}:</span>
           <Select value={assessmentId} onValueChange={setAssessmentId}>
@@ -1136,6 +1241,12 @@ function GradingTab({
           )}
           {assessment && markSheet.length > 0 && (
             <Button size="sm" variant="outline" onClick={() => { setShowBulkPaste(true); setBulkPasteText(""); setBulkPastePreview([]); setBulkParsed(false); }} className="gap-1 h-8 text-xs shrink-0 border-emerald-300 text-emerald-700 hover:bg-emerald-50"><ClipboardPaste className="w-3.5 h-3.5" />{t("bulkPaste")}</Button>
+          )}
+          {assessment && (
+            <Button size="sm" onClick={handleGenerateAssessmentPdf} disabled={isGeneratingAssessmentPdf} className="gap-1 h-8 text-xs shrink-0 bg-indigo-600 hover:bg-indigo-700 text-white">
+              {isGeneratingAssessmentPdf ? <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
+              {isGeneratingAssessmentPdf ? (lang === "zh" ? "生成中..." : "Generating...") : (lang === "zh" ? "生成 PDF" : "Generate PDF")}
+            </Button>
           )}
           {assessment && (
             <button onClick={() => {
@@ -1166,7 +1277,7 @@ function GradingTab({
       </div>
 
       {assessment && (
-        <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/60">
+        <div className="px-3 sm:px-4 py-3 border-b border-slate-200 bg-slate-50/60">
           <AssessmentDetailAnalysis
             assessment={assessment}
             students={sortedStudents}
@@ -1191,9 +1302,9 @@ function GradingTab({
           </div>
         </div>
       ) : (
-        <div className="flex-1 flex flex-col md:flex-row gap-0 overflow-hidden">
+        <div className="flex flex-col md:flex-1 md:flex-row gap-0 md:overflow-hidden">
           {/* ── Left: Student list ── */}
-          <div className="md:w-64 w-full md:shrink-0 border-b md:border-b-0 md:border-r border-slate-200 flex flex-col overflow-hidden bg-white" style={{ maxHeight: 'clamp(200px, 50vh, 400px)' }}>
+          <div className="w-full md:w-64 md:shrink-0 border-b md:border-b-0 md:border-r border-slate-200 flex flex-col overflow-hidden bg-white max-h-[38vh] md:max-h-[clamp(200px,50vh,400px)]">
             <div className="px-3 py-2 border-b border-slate-200 bg-slate-50 hidden md:block">
               <p className="text-xs font-bold uppercase tracking-widest text-slate-500">{t("students")} ({sortedStudents.length})</p>
             </div>
@@ -1228,7 +1339,7 @@ function GradingTab({
           </div>
 
           {/* ── Right: Score entry ── */}
-          <div className="flex-1 flex flex-col overflow-hidden bg-white">
+          <div className="min-h-[480px] md:min-h-0 flex-1 flex flex-col overflow-hidden bg-white">
             {!selectedStudent ? (
               <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">{t("selectStudentPrompt")}</div>
             ) : (
