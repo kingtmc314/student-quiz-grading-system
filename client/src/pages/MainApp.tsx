@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.13.0";
+const APP_VERSION = "v1.13.1";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -435,7 +435,7 @@ async function generateAssessmentPdf({
     <footer class="pdf-footer"><span>${escapeHtml(yearLabel)} · ${escapeHtml(className)} · ${escapeHtml(assessmentTitle)}</span><span>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(generatedAt)}</span></footer>`;
   const printWindow = window.open("", "_blank");
   if (!printWindow) throw new Error(lang === "zh" ? "無法開啟報告視窗，請允許彈出視窗。" : "Unable to open the report window. Please allow popups.");
-  printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(assessmentTitle)} — PDF</title><style>body{margin:0;background:#fff}@media print{@page{size:A4;margin:9mm}body{print-color-adjust:exact;-webkit-print-color-adjust:exact}.pdf-section{break-inside:avoid}}</style></head><body>${report.innerHTML}</body></html>`);
+  printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(assessmentTitle)} — PDF</title><style>html,body{margin:0;padding:0;background:#fff}.pdf-document{box-sizing:border-box;width:100%;max-width:210mm;min-height:297mm;margin:0 auto;padding:14mm 13mm 16mm;background:#fff;color:#1e293b;font-family:Arial,'Microsoft JhengHei','PingFang TC',sans-serif;font-size:12px;line-height:1.45}@media print{@page{size:A4;margin:0}body{print-color-adjust:exact;-webkit-print-color-adjust:exact}.pdf-document{width:210mm;min-height:297mm;padding:14mm 13mm 16mm}.pdf-section{break-inside:avoid}}</style></head><body><main class="pdf-document">${report.innerHTML}</main></body></html>`);
   printWindow.document.close();
   printWindow.focus();
   window.setTimeout(() => printWindow.print(), 300);
