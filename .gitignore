@@ -111,6 +111,9 @@ temp/
 # Local read-only database snapshots (may contain student records)
 data-integrity-backups/
 
+# Local PDF test exports (may contain student records)
+test-exports/
+
 # Manus version file (auto-generated, not part of source)
 client/public/__manus__/version.json
 .project-config.json
