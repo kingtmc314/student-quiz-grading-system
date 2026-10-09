@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.19.0";
+const APP_VERSION = "v1.20.0";
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -252,11 +252,13 @@ function AssessmentDetailAnalysis({
   assessment,
   students,
   nature,
+  topics,
   lang,
 }: {
   assessment: Assessment;
   students: Student[];
   nature?: AssessmentNature;
+  topics: Topic[];
   lang: string;
 }) {
   const questions = assessment.markSheet.filter(item => !item.isSection);
@@ -282,6 +284,57 @@ function AssessmentDetailAnalysis({
     const fullMarkCount = values.filter(score => score === item.maxMark).length;
     return { ...item, values, avg, pct, fullMarkCount };
   });
+  const median = totals.length === 0 ? null : (() => {
+    const sorted = [...totals].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  })();
+  const standardDeviation = totals.length > 1 && average !== null
+    ? Math.sqrt(totals.reduce((sum, score) => sum + Math.pow(score - average, 2), 0) / totals.length)
+    : null;
+  const scoreBands = [
+    { key: "below40", label: lang === "zh" ? "<40%" : "<40%", count: 0, tone: "bg-red-500" },
+    { key: "40to49", label: "40–49%", count: 0, tone: "bg-orange-500" },
+    { key: "50to69", label: "50–69%", count: 0, tone: "bg-amber-500" },
+    { key: "70to84", label: "70–84%", count: 0, tone: "bg-emerald-500" },
+    { key: "85plus", label: "85–100%", count: 0, tone: "bg-green-700" },
+  ];
+  totals.forEach(score => {
+    const pct = maxTotal > 0 ? (score / maxTotal) * 100 : 0;
+    if (pct < 40) scoreBands[0].count += 1;
+    else if (pct < 50) scoreBands[1].count += 1;
+    else if (pct < 70) scoreBands[2].count += 1;
+    else if (pct < 85) scoreBands[3].count += 1;
+    else scoreBands[4].count += 1;
+  });
+  const topicStats = Array.from(questionStats.reduce((groups, item) => {
+    const topic = item.topicId ? topics.find(candidate => candidate.id === item.topicId) : undefined;
+    const key = topic?.id ?? "__untagged__";
+    const current = groups.get(key) ?? {
+      key,
+      unit: topic?.learningUnit || (lang === "zh" ? "未標記課題" : "Topic not tagged"),
+      objective: topic ? (lang === "zh" && topic.nameCht ? topic.nameCht : (topic.learningObjective || topic.name)) : (lang === "zh" ? "請在評分表指定課題" : "Assign a topic in the mark sheet"),
+      enteredAverage: 0,
+      enteredMax: 0,
+      questionCount: 0,
+      enteredCount: 0,
+    };
+    if (item.avg !== null) {
+      current.enteredAverage += item.avg;
+      current.enteredMax += item.maxMark;
+    }
+    current.questionCount += 1;
+    current.enteredCount += item.values.length;
+    groups.set(key, current);
+    return groups;
+  }, new Map<string, { key: string; unit: string; objective: string; enteredAverage: number; enteredMax: number; questionCount: number; enteredCount: number }>()).values()).map(topic => ({
+    ...topic,
+    pct: topic.enteredMax > 0 ? Math.round((topic.enteredAverage / topic.enteredMax) * 100) : null,
+  })).sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101));
+  const priorityQuestions = questionStats.filter(item => item.pct !== null).sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101)).slice(0, 3);
+  const strengthQuestions = questionStats.filter(item => item.pct !== null).sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1)).slice(0, 2);
+  const mappedQuestionCount = questionStats.filter(item => Boolean(item.topicId)).length;
+  const priorityTopics = topicStats.filter(topic => topic.key !== "__untagged__" && topic.pct !== null).slice(0, 2);
   const scoredValueCount = questionStats.reduce((sum, item) => sum + item.values.length, 0);
   const completionPct = students.length > 0 && questions.length > 0
     ? Math.round((scoredValueCount / (students.length * questions.length)) * 100)
@@ -321,6 +374,37 @@ function AssessmentDetailAnalysis({
           ))}
         </div>
 
+        {questions.length > 0 && (
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-2.5">
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+              <p className="text-xs font-bold text-slate-700">{lang === "zh" ? "班級成績分布" : "Class score distribution"}</p>
+              <div className="mt-2 space-y-1.5">
+                {scoreBands.map(band => (
+                  <div key={band.key} className="grid grid-cols-[48px_1fr_28px] items-center gap-2 text-[10px]">
+                    <span className="font-mono text-slate-500">{band.label}</span>
+                    <div className="h-2 rounded-full bg-slate-200 overflow-hidden"><div className={cn("h-full rounded-full", band.tone)} style={{ width: `${gradedCount > 0 ? Math.round((band.count / gradedCount) * 100) : 0}%` }} /></div>
+                    <span className="text-right font-mono font-bold text-slate-700">{band.count}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-2 text-[10px] text-slate-500">{lang === "zh" ? "中位數" : "Median"}: <b className="font-mono text-slate-700">{median !== null ? `${median.toFixed(1)}/${maxTotal}` : "—"}</b>{standardDeviation !== null ? <><span className="mx-1.5">·</span>{lang === "zh" ? "差異" : "Spread"}: <b className="font-mono text-slate-700">±{standardDeviation.toFixed(1)}</b></> : null}</p>
+            </div>
+            <div className="rounded-lg border border-red-100 bg-red-50/40 p-3">
+              <p className="text-xs font-bold text-red-800">{lang === "zh" ? "優先重教題目" : "Priority re-teaching questions"}</p>
+              {priorityQuestions.length > 0 ? <div className="mt-2 space-y-1.5">{priorityQuestions.map(item => {
+                const topic = item.topicId ? topics.find(candidate => candidate.id === item.topicId) : undefined;
+                return <div key={item.id} className="flex items-start justify-between gap-2 text-[10px]"><div className="min-w-0"><span className="font-mono font-bold text-red-700">{item.label}</span><span className="ml-1 text-slate-600">{topic?.learningUnit || (lang === "zh" ? "未標記課題" : "Topic not tagged")}</span></div><span className={cn("shrink-0 font-mono font-bold", statTone(item.pct))}>{item.pct}%</span></div>;
+              })}</div> : <p className="mt-2 text-[10px] text-slate-400">{lang === "zh" ? "暫無已輸入題目。" : "No entered questions yet."}</p>}
+              <p className="mt-2 text-[10px] leading-relaxed text-red-700/80">{lang === "zh" ? "建議先以最低表現題目作診斷，再按課題安排示範、變式練習及短暫檢核。" : "Start with the lowest-performing items for diagnosis, then use worked examples, variations and a short check-for-understanding."}</p>
+            </div>
+            <div className="rounded-lg border border-blue-100 bg-blue-50/40 p-3">
+              <p className="text-xs font-bold text-blue-800">{lang === "zh" ? "課題達成與資料覆蓋" : "Topic attainment & coverage"}</p>
+              <div className="mt-2 space-y-1.5">{topicStats.slice(0, 3).map(topic => <div key={topic.key} className="flex items-start justify-between gap-2 text-[10px]"><div className="min-w-0"><p className="font-semibold text-slate-700 truncate">{topic.unit}</p><p className="text-slate-500 truncate">{topic.questionCount} {lang === "zh" ? "題 ·" : "items ·"} {topic.enteredCount}/{students.length * topic.questionCount} {lang === "zh" ? "筆輸入" : "entries"}</p></div><span className={cn("shrink-0 font-mono font-bold", statTone(topic.pct))}>{topic.pct !== null ? `${topic.pct}%` : "—"}</span></div>)}</div>
+              <p className="mt-2 text-[10px] text-slate-500">{lang === "zh" ? "已標記課題題目" : "Topic-tagged items"}: <b className="font-mono text-slate-700">{mappedQuestionCount}/{questions.length}</b>{priorityTopics[0] ? <><span className="mx-1">·</span>{lang === "zh" ? "首要課題" : "Primary focus"}: <b className="text-slate-700">{priorityTopics[0].unit}</b></> : null}</p>
+            </div>
+          </div>
+        )}
+
         {questions.length > 0 ? (
           <div>
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -336,6 +420,10 @@ function AssessmentDetailAnalysis({
                       <span className="font-mono font-bold text-xs text-slate-700">{item.label}</span>
                       <span className={cn("font-mono font-bold text-xs", statTone(item.pct))}>{item.avg !== null ? `${item.avg.toFixed(1)}/${item.maxMark} (${item.pct}%)` : "—"}</span>
                     </div>
+                    {item.topicId && (() => {
+                      const topic = topics.find(candidate => candidate.id === item.topicId);
+                      return topic ? <p className="mt-1 text-[10px] text-slate-500 truncate">{topic.learningUnit || topic.name}</p> : null;
+                    })()}
                     <div className="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden">
                       <div className={cn("h-full rounded-full transition-[width] duration-200", progressColor)} style={{ width: `${item.pct ?? 0}%` }} />
                     </div>
@@ -369,6 +457,7 @@ async function generateAssessmentPdf({
   yearLabel,
   className,
   subjectName,
+  topics,
   natureName,
   assessmentTitle,
   lang,
@@ -378,6 +467,7 @@ async function generateAssessmentPdf({
   yearLabel: string;
   className: string;
   subjectName: string;
+  topics: Topic[];
   natureName: string;
   assessmentTitle: string;
   lang: string;
@@ -400,24 +490,100 @@ async function generateAssessmentPdf({
   const gradedRows = rows.filter((row): row is typeof row & { total: number } => row.total !== null);
   const average = gradedRows.length > 0 ? gradedRows.reduce((sum, row) => sum + row.total, 0) / gradedRows.length : null;
   const absentCount = rows.filter(row => row.isAbsent).length;
+  const sortedTotals = gradedRows.map(row => row.total).sort((a, b) => a - b);
+  const median = sortedTotals.length === 0 ? null : (() => {
+    const middle = Math.floor(sortedTotals.length / 2);
+    return sortedTotals.length % 2 ? sortedTotals[middle] : (sortedTotals[middle - 1] + sortedTotals[middle]) / 2;
+  })();
+  const standardDeviation = sortedTotals.length > 1 && average !== null
+    ? Math.sqrt(sortedTotals.reduce((sum, score) => sum + Math.pow(score - average, 2), 0) / sortedTotals.length)
+    : null;
+  const scoreBands = [
+    { label: "<40%", count: 0, color: "#dc2626" },
+    { label: "40–49%", count: 0, color: "#f97316" },
+    { label: "50–69%", count: 0, color: "#d97706" },
+    { label: "70–84%", count: 0, color: "#059669" },
+    { label: "85–100%", count: 0, color: "#047857" },
+  ];
+  sortedTotals.forEach(score => {
+    const pct = totalMarks > 0 ? (score / totalMarks) * 100 : 0;
+    if (pct < 40) scoreBands[0].count += 1;
+    else if (pct < 50) scoreBands[1].count += 1;
+    else if (pct < 70) scoreBands[2].count += 1;
+    else if (pct < 85) scoreBands[3].count += 1;
+    else scoreBands[4].count += 1;
+  });
   const questionRows = questions.map(item => {
     const scores = assessment.scores.filter(entry => !entry.isAbsent)
       .map(entry => getScoreMap(assessment, entry.studentId)[item.id])
       .filter((score): score is number => typeof score === "number");
     const averageScore = scores.length > 0 ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null;
     const pct = averageScore !== null && item.maxMark > 0 ? Math.round((averageScore / item.maxMark) * 100) : null;
-    return { label: item.label, max: item.maxMark, entered: scores.length, fullMarks: scores.filter(score => score === item.maxMark).length, averageScore, pct };
+    const topic = item.topicId ? topics.find(candidate => candidate.id === item.topicId) : undefined;
+    return {
+      label: item.label,
+      max: item.maxMark,
+      entered: scores.length,
+      fullMarks: scores.filter(score => score === item.maxMark).length,
+      averageScore,
+      pct,
+      topic: topic ? {
+        unit: topic.learningUnit || (lang === "zh" ? "未分類單元" : "Unassigned unit"),
+        objective: lang === "zh" && topic.nameCht ? topic.nameCht : (topic.learningObjective || topic.name),
+      } : null,
+    };
   });
   const expectedScores = students.length * questions.length;
   const completion = expectedScores > 0 ? Math.round((questionRows.reduce((sum, item) => sum + item.entered, 0) / expectedScores) * 100) : 0;
+  const topicRows = Array.from(questionRows.reduce((groups, item) => {
+    const key = item.topic ? `${item.topic.unit}::${item.topic.objective}` : "__untagged__";
+    const current = groups.get(key) ?? {
+      key,
+      unit: item.topic?.unit || (lang === "zh" ? "未標記課題" : "Topic not tagged"),
+      objective: item.topic?.objective || (lang === "zh" ? "請在評分表指定課題" : "Assign a topic in the mark sheet"),
+      average: 0,
+      max: 0,
+      questions: 0,
+      entered: 0,
+    };
+    if (item.averageScore !== null) {
+      current.average += item.averageScore;
+      current.max += item.max;
+    }
+    current.questions += 1;
+    current.entered += item.entered;
+    groups.set(key, current);
+    return groups;
+  }, new Map<string, { key: string; unit: string; objective: string; average: number; max: number; questions: number; entered: number }>()).values()).map(topic => ({
+    ...topic,
+    pct: topic.max > 0 ? Math.round((topic.average / topic.max) * 100) : null,
+  })).sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101));
+  const priorityQuestions = questionRows.filter(item => item.pct !== null).sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101)).slice(0, 3);
+  const strengthQuestions = questionRows.filter(item => item.pct !== null).sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1)).slice(0, 2);
+  const mappedQuestionCount = questionRows.filter(item => item.topic !== null).length;
   const colorForScore = (pct: number | null) => pct === null ? "#94a3b8" : pct >= 70 ? "#059669" : pct >= 50 ? "#d97706" : "#dc2626";
+  const averagePct = average !== null && totalMarks > 0 ? Math.round((average / totalMarks) * 100) : null;
+  const scoreDistributionRows = scoreBands.map(band => `<div class="distribution-row"><span>${band.label}</span><div class="distribution-track"><span style="width:${gradedRows.length > 0 ? Math.round((band.count / gradedRows.length) * 100) : 0}%;background:${band.color}"></span></div><strong>${band.count}</strong></div>`).join("");
+  const priorityList = priorityQuestions.length > 0
+    ? priorityQuestions.map(item => `<li><strong>${escapeHtml(item.label)}</strong> — ${escapeHtml(item.topic?.unit || (lang === "zh" ? "未標記課題" : "Topic not tagged"))}: <b style="color:${colorForScore(item.pct)}">${item.pct}%</b>${item.topic ? `<span class="analysis-objective">${escapeHtml(item.topic.objective)}</span>` : ""}</li>`).join("")
+    : `<li class="muted">${lang === "zh" ? "暫無已輸入題目。" : "No entered questions yet."}</li>`;
+  const strengthList = strengthQuestions.length > 0
+    ? strengthQuestions.map(item => `<li><strong>${escapeHtml(item.label)}</strong> — ${escapeHtml(item.topic?.unit || (lang === "zh" ? "未標記課題" : "Topic not tagged"))}: <b style="color:${colorForScore(item.pct)}">${item.pct}%</b></li>`).join("")
+    : `<li class="muted">${lang === "zh" ? "暫無已輸入題目。" : "No entered questions yet."}</li>`;
+  const topicAnalysisRows = topicRows.map((topic, index) => `<tr class="${index % 2 ? "striped" : ""}"><td><strong>${escapeHtml(topic.unit)}</strong><span class="analysis-objective">${escapeHtml(topic.objective)}</span></td><td class="pdf-number">${topic.questions}</td><td class="pdf-number">${topic.entered}/${students.length * topic.questions}</td><td class="pdf-number">${topic.max > 0 ? `${topic.average.toFixed(1)}/${topic.max}` : "—"}</td><td class="pdf-number" style="color:${colorForScore(topic.pct)};font-weight:700">${topic.pct !== null ? `${topic.pct}%` : "—"}</td></tr>`).join("");
+  const questionAnalysisRows = questionRows.map((item, index) => `<tr class="${index % 2 ? "striped" : ""}"><td><strong>${escapeHtml(item.label)}</strong> <span style="color:#94a3b8">/${item.max}</span></td><td>${item.topic ? `<strong>${escapeHtml(item.topic.unit)}</strong><span class="analysis-objective">${escapeHtml(item.topic.objective)}</span>` : `<span class="muted">${lang === "zh" ? "未標記課題" : "Topic not tagged"}</span>`}</td><td class="pdf-number">${item.averageScore !== null ? `${item.averageScore.toFixed(1)}/${item.max}` : "—"}</td><td class="pdf-number" style="color:${colorForScore(item.pct)};font-weight:700">${item.pct !== null ? `${item.pct}%` : "—"}</td><td class="pdf-number">${item.entered}/${students.length}</td><td class="pdf-number">${item.fullMarks}</td></tr>`).join("");
+  const assessmentNarrative = averagePct === null
+    ? (lang === "zh" ? "尚未有足夠已評分成績，未能產生可靠的班級表現判讀。" : "There are not yet enough graded results for a reliable class-level interpretation.")
+    : (lang === "zh"
+      ? `班級平均為 ${averagePct}%（${average!.toFixed(1)}/${totalMarks}），中位數為 ${median?.toFixed(1) ?? "—"}/${totalMarks}${standardDeviation !== null ? `，成績差異約 ±${standardDeviation.toFixed(1)} 分` : ""}。低於 50% 的學生共有 ${scoreBands[0].count + scoreBands[1].count} 人；建議先處理下列低表現題目及相關課題。`
+      : `The class average is ${averagePct}% (${average!.toFixed(1)}/${totalMarks}), with a median of ${median?.toFixed(1) ?? "—"}/${totalMarks}${standardDeviation !== null ? ` and a score spread of about ±${standardDeviation.toFixed(1)} marks` : ""}. ${scoreBands[0].count + scoreBands[1].count} student(s) are below 50%; use the lowest-performing questions and their linked topics as the first re-teaching focus.`);
   const report = document.createElement("div");
   const generatedAt = new Date().toLocaleString(lang === "zh" ? "zh-HK" : "en-GB");
 
   report.style.cssText = "position:fixed;left:-10000px;top:0;width:794px;background:#fff;color:#1e293b;font-family:Arial,'Microsoft JhengHei','PingFang TC',sans-serif;font-size:12px;line-height:1.45;padding:32px;";
   report.innerHTML = `
     <style>
-      .pdf-header{border-bottom:3px solid #2563eb;padding-bottom:12px;margin-bottom:16px}.pdf-title{margin:0;color:#1d4ed8;font-size:24px;font-weight:800}.pdf-subtitle{margin:4px 0 0;color:#64748b}.pdf-meta{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 18px;margin-bottom:18px}.pdf-meta-item{border-bottom:1px solid #e2e8f0;padding-bottom:5px}.pdf-label{font-size:10px;letter-spacing:.04em;font-weight:700;color:#64748b;text-transform:uppercase}.pdf-value{font-weight:700;margin-top:2px}.pdf-section{margin-top:20px;page-break-inside:avoid}.pdf-heading{margin:0 0 8px;border-left:4px solid #2563eb;padding-left:8px;font-size:14px}.pdf-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.pdf-stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;padding:8px}.pdf-stat-value{margin-top:3px;font-size:17px;font-family:monospace;font-weight:800}.pdf-table{border-collapse:collapse;width:100%;font-size:10px}.pdf-table th{background:#1d4ed8;color:#fff;padding:6px 7px;text-align:left}.pdf-table td{padding:5px 7px;border-bottom:1px solid #e2e8f0}.pdf-table tr:nth-child(even) td{background:#f8fafc}.pdf-number{text-align:right;font-family:monospace}.pdf-footer{margin-top:20px;padding-top:8px;border-top:1px solid #e2e8f0;color:#94a3b8;font-size:9px;display:flex;justify-content:space-between;gap:12px}
+      .pdf-header{border-bottom:3px solid #2563eb;padding-bottom:12px;margin-bottom:16px}.pdf-title{margin:0;color:#1d4ed8;font-size:24px;font-weight:800}.pdf-subtitle{margin:4px 0 0;color:#64748b}.pdf-meta{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 18px;margin-bottom:18px}.pdf-meta-item{border-bottom:1px solid #e2e8f0;padding-bottom:5px}.pdf-label{font-size:10px;letter-spacing:.04em;font-weight:700;color:#64748b;text-transform:uppercase}.pdf-value{font-weight:700;margin-top:2px}.pdf-section{margin-top:20px;page-break-inside:avoid}.pdf-section.allow-split{page-break-inside:auto}.pdf-heading{margin:0 0 8px;border-left:4px solid #2563eb;padding-left:8px;font-size:14px}.pdf-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.pdf-stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;padding:8px}.pdf-stat-value{margin-top:3px;font-size:17px;font-family:monospace;font-weight:800}.pdf-table{border-collapse:collapse;width:100%;font-size:10px}.pdf-table th{background:#1d4ed8;color:#fff;padding:6px 7px;text-align:left}.pdf-table td{padding:5px 7px;border-bottom:1px solid #e2e8f0;vertical-align:top}.pdf-table tr:nth-child(even) td,.striped td{background:#f8fafc}.pdf-number{text-align:right;font-family:monospace}.pdf-footer{margin-top:20px;padding-top:8px;border-top:1px solid #e2e8f0;color:#94a3b8;font-size:9px;display:flex;justify-content:space-between;gap:12px}.diagnostic-grid{display:grid;grid-template-columns:1.05fr 1fr 1fr;gap:8px}.diagnostic-card{border:1px solid #dbeafe;border-radius:7px;padding:8px;background:#fbfdff}.diagnostic-card h3{margin:0 0 5px;font-size:10px;color:#1e3a8a}.diagnostic-card p{margin:0;font-size:9px;color:#475569;line-height:1.5}.diagnostic-card ul{margin:0;padding-left:15px;font-size:9px;line-height:1.5}.distribution-row{display:grid;grid-template-columns:44px 1fr 18px;gap:5px;align-items:center;font-size:8px;color:#475569;margin:3px 0}.distribution-row strong{text-align:right;color:#334155;font-family:monospace}.distribution-track{height:6px;border-radius:999px;background:#e2e8f0;overflow:hidden}.distribution-track span{display:block;height:100%;border-radius:999px}.analysis-objective{display:block;margin-top:1px;color:#64748b;font-size:8px;line-height:1.3}.muted{color:#94a3b8}
     </style>
     <header class="pdf-header"><h1 class="pdf-title">${lang === "zh" ? "評估細項分析報告" : "Assessment Detail Report"}</h1><p class="pdf-subtitle">${escapeHtml(assessmentTitle)}</p></header>
     <div class="pdf-meta">
@@ -434,7 +600,9 @@ async function generateAssessmentPdf({
       <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "班級平均" : "Class Average"}</div><div class="pdf-stat-value" style="color:${colorForScore(average !== null && totalMarks > 0 ? Math.round((average / totalMarks) * 100) : null)}">${average !== null ? `${average.toFixed(1)}/${totalMarks}` : "—"}</div></div>
       <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "缺席" : "Absent"}</div><div class="pdf-stat-value" style="color:${absentCount > 0 ? "#ea580c" : "#475569"}">${absentCount}</div></div>
     </div></section>
-    <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "逐題表現" : "Question Analysis"}</h2>${questions.length > 0 ? `<table class="pdf-table"><thead><tr><th>${lang === "zh" ? "題號" : "Question"}</th><th class="pdf-number">${lang === "zh" ? "平均" : "Average"}</th><th class="pdf-number">%</th><th class="pdf-number">${lang === "zh" ? "已輸入" : "Entered"}</th><th class="pdf-number">${lang === "zh" ? "滿分人數" : "Full Marks"}</th></tr></thead><tbody>${questionRows.map(item => `<tr><td><strong>${escapeHtml(item.label)}</strong> <span style="color:#94a3b8">/${item.max}</span></td><td class="pdf-number">${item.averageScore !== null ? `${item.averageScore.toFixed(1)}/${item.max}` : "—"}</td><td class="pdf-number" style="color:${colorForScore(item.pct)};font-weight:700">${item.pct !== null ? `${item.pct}%` : "—"}</td><td class="pdf-number">${item.entered}/${students.length}</td><td class="pdf-number">${item.fullMarks}</td></tr>`).join("")}</tbody></table>` : `<p style="color:#94a3b8">${lang === "zh" ? "尚未設定評分表。" : "No mark sheet configured."}</p>`}</section>
+    <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "整體判讀、分布及教學焦點" : "Interpretation, Distribution & Teaching Focus"}</h2><div class="diagnostic-grid"><div class="diagnostic-card"><h3>${lang === "zh" ? "班級表現判讀" : "Class performance interpretation"}</h3><p>${assessmentNarrative}</p><p style="margin-top:6px">${lang === "zh" ? "課題標記覆蓋" : "Topic-tag coverage"}: <strong>${mappedQuestionCount}/${questions.length}</strong> ${lang === "zh" ? "題" : "items"}</p></div><div class="diagnostic-card"><h3>${lang === "zh" ? "成績分布（已評分學生）" : "Score distribution (graded students)"}</h3>${scoreDistributionRows}</div><div class="diagnostic-card"><h3>${lang === "zh" ? "優先重教題目" : "Priority re-teaching questions"}</h3><ul>${priorityList}</ul><p style="margin-top:6px">${lang === "zh" ? "做法：先用最低表現題作診斷；示範解法後以變式短題及退出卷確認理解。" : "Action: diagnose with the lowest-performing item, model the method, then use short variations and an exit ticket."}</p></div></div></section>
+    <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "課題達成度分析" : "Topic Attainment Analysis"}</h2>${topicRows.length > 0 ? `<table class="pdf-table"><thead><tr><th>${lang === "zh" ? "課題／學習目標" : "Topic / learning objective"}</th><th class="pdf-number">${lang === "zh" ? "題數" : "Items"}</th><th class="pdf-number">${lang === "zh" ? "輸入" : "Entered"}</th><th class="pdf-number">${lang === "zh" ? "平均" : "Average"}</th><th class="pdf-number">%</th></tr></thead><tbody>${topicAnalysisRows}</tbody></table>` : `<p class="muted">${lang === "zh" ? "尚未有可作課題分析的題目。" : "No topic-tagged questions are available for analysis yet."}</p>`}<div class="diagnostic-grid" style="grid-template-columns:1fr 1fr;margin-top:8px"><div class="diagnostic-card"><h3>${lang === "zh" ? "優勢證據" : "Evidence of strength"}</h3><ul>${strengthList}</ul></div><div class="diagnostic-card"><h3>${lang === "zh" ? "建議課堂跟進" : "Suggested lesson follow-up"}</h3><p>${lang === "zh" ? "以低於 50% 的課題安排小組再教，將 50–69% 課題放進鞏固練習；70% 以上課題可加入多步或非例行題延伸。" : "Re-teach topics below 50% in a small group, reinforce 50–69% topics through consolidation practice, and extend 70%+ topics with multi-step or non-routine questions."}</p></div></div></section>
+    <section class="pdf-section allow-split"><h2 class="pdf-heading">${lang === "zh" ? "逐題表現與課題對照" : "Question Analysis & Topic Mapping"}</h2>${questions.length > 0 ? `<table class="pdf-table"><thead><tr><th>${lang === "zh" ? "題號" : "Question"}</th><th>${lang === "zh" ? "所屬課題／目標" : "Topic / objective"}</th><th class="pdf-number">${lang === "zh" ? "平均" : "Average"}</th><th class="pdf-number">%</th><th class="pdf-number">${lang === "zh" ? "已輸入" : "Entered"}</th><th class="pdf-number">${lang === "zh" ? "滿分人數" : "Full Marks"}</th></tr></thead><tbody>${questionAnalysisRows}</tbody></table>` : `<p class="muted">${lang === "zh" ? "尚未設定評分表。" : "No mark sheet configured."}</p>`}</section>
     <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "學生總分" : "Student Totals"}</h2><table class="pdf-table"><thead><tr><th>${lang === "zh" ? "班號" : "Class No."}</th><th>${lang === "zh" ? "學生姓名" : "Student"}</th><th class="pdf-number">${lang === "zh" ? "得分" : "Score"}</th><th class="pdf-number">%</th><th>${lang === "zh" ? "狀態" : "Status"}</th></tr></thead><tbody>${rows.map(row => { const studentName = lang === "zh" && row.student.nameCht ? row.student.nameCht : row.student.name; const status = row.isAbsent ? (lang === "zh" ? "缺席" : "Absent") : row.total !== null ? (lang === "zh" ? "已評分" : "Graded") : (lang === "zh" ? "未輸入" : "Not entered"); return `<tr><td>${escapeHtml(row.student.classNo)}</td><td>${escapeHtml(studentName)}</td><td class="pdf-number">${row.isAbsent ? "ABS" : row.total !== null ? `${row.total}/${totalMarks}` : "—"}</td><td class="pdf-number" style="color:${colorForScore(row.pct)};font-weight:700">${row.pct !== null ? `${row.pct}%` : "—"}</td><td>${status}</td></tr>`; }).join("")}</tbody></table></section>
     <footer class="pdf-footer"><span>${escapeHtml(yearLabel)} · ${escapeHtml(className)} · ${escapeHtml(assessmentTitle)}</span><span>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(generatedAt)}</span></footer>`;
   const printWindow = window.open("", "_blank");
@@ -1208,6 +1376,7 @@ function GradingTab({
         yearLabel: year.label,
         className: cls.name,
         subjectName: lang === "zh" && subject.nameCht ? subject.nameCht : subject.name,
+        topics,
         natureName: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"),
         assessmentTitle: `${assessment.code ? `[${assessment.code}] ` : ""}${assessTitle}`,
         lang,
@@ -1286,6 +1455,7 @@ function GradingTab({
             assessment={assessment}
             students={sortedStudents}
             nature={natures.find(item => item.id === assessment.natureId)}
+            topics={topics}
             lang={lang}
           />
         </div>
@@ -3282,6 +3452,59 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     })),
   ];
 
+  const buildAssessmentDiagnosis = (assessment: typeof detailedAssessmentHistory[number]) => {
+    const answeredQuestions = assessment.questionDetails.filter(question => question.score !== null && question.pct !== null);
+    const overallGap = assessment.total !== null && assessment.classAverage !== null && assessment.max > 0
+      ? Math.round((((assessment.total - assessment.classAverage) / assessment.max) * 100) * 10) / 10
+      : null;
+    const priorityQuestions = [...answeredQuestions].sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101)).slice(0, 3);
+    const strengthQuestions = [...answeredQuestions].sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1)).slice(0, 2);
+    const belowClassQuestions = answeredQuestions
+      .map(question => ({ ...question, gap: question.classAverage !== null && question.score !== null ? question.score - question.classAverage : null }))
+      .filter(question => question.gap !== null && question.gap < 0)
+      .sort((a, b) => (a.gap ?? 0) - (b.gap ?? 0))
+      .slice(0, 2);
+    const topicGroups = Array.from(answeredQuestions.reduce((groups, question) => {
+      const key = question.topic ? `${question.topic.learningUnit}::${question.topic.objective}` : "__untagged__";
+      const current = groups.get(key) ?? {
+        key,
+        unit: question.topic?.learningUnit || (lang === "zh" ? "未標記課題" : "Topic not tagged"),
+        objective: question.topic?.objective || "",
+        earned: 0,
+        max: 0,
+        count: 0,
+      };
+      current.earned += question.score ?? 0;
+      current.max += question.max;
+      current.count += 1;
+      groups.set(key, current);
+      return groups;
+    }, new Map<string, { key: string; unit: string; objective: string; earned: number; max: number; count: number }>()).values()).map(topic => ({
+      ...topic,
+      pct: topic.max > 0 ? Math.round((topic.earned / topic.max) * 100) : null,
+    })).sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101));
+    const primaryTopic = topicGroups.find(topic => topic.key !== "__untagged__") ?? null;
+    const completion = assessment.questionDetails.length > 0
+      ? Math.round((answeredQuestions.length / assessment.questionDetails.length) * 100)
+      : 0;
+    const interpretation = assessment.isAbsent
+      ? (lang === "zh" ? "此評估標示為缺席，未納入成績、排名或課題診斷。" : "This assessment is recorded as absent and is excluded from score, rank and topic diagnostics.")
+      : assessment.pct === null
+      ? (lang === "zh" ? "尚未有可供判讀的個人成績。" : "No individual score is available for interpretation yet.")
+      : lang === "zh"
+      ? `本次得分 ${assessment.pct}%${overallGap !== null ? `，較班級平均${overallGap >= 0 ? "高" : "低"} ${Math.abs(overallGap)} 個百分點` : ""}；已輸入 ${answeredQuestions.length}/${assessment.questionDetails.length} 題${primaryTopic ? `。首要跟進課題為「${primaryTopic.unit}」(${primaryTopic.pct}%)` : ""}。`
+      : `This result is ${assessment.pct}%${overallGap !== null ? `, ${Math.abs(overallGap)} percentage point(s) ${overallGap >= 0 ? "above" : "below"} the class average` : ""}; ${answeredQuestions.length}/${assessment.questionDetails.length} question(s) are entered${primaryTopic ? `. The first topic to address is “${primaryTopic.unit}” (${primaryTopic.pct}%)` : ""}.`;
+    return { overallGap, priorityQuestions, strengthQuestions, belowClassQuestions, topicGroups, completion, interpretation };
+  };
+  const assessmentDiagnostics = new Map(detailedAssessmentHistory.map(assessment => [assessment.id, buildAssessmentDiagnosis(assessment)]));
+  const currentYearGraded = gradedAllYearsAssessments.filter(item => item.yearLabel === year.label);
+  const currentYearAvg = currentYearGraded.length > 0 ? Math.round(currentYearGraded.reduce((sum, item) => sum + (item.pct ?? 0), 0) / currentYearGraded.length) : null;
+  const historicalGraded = gradedAllYearsAssessments.filter(item => item.yearLabel !== year.label);
+  const historicalAvg = historicalGraded.length > 0 ? Math.round(historicalGraded.reduce((sum, item) => sum + (item.pct ?? 0), 0) / historicalGraded.length) : null;
+  const currentVsHistory = currentYearAvg !== null && historicalAvg !== null ? currentYearAvg - historicalAvg : null;
+  const allYearsBenchmarkGaps = gradedAllYearsAssessments.map(item => item.classAverage !== null && item.max > 0 && item.total !== null ? ((item.total - item.classAverage) / item.max) * 100 : null).filter((gap): gap is number => gap !== null);
+  const averageBenchmarkGap = allYearsBenchmarkGaps.length > 0 ? Math.round((allYearsBenchmarkGaps.reduce((sum, gap) => sum + gap, 0) / allYearsBenchmarkGaps.length) * 10) / 10 : null;
+
   const trendIcon = caHistory.length >= 2
     ? (caHistory[caHistory.length - 1].pct! > caHistory[caHistory.length - 2].pct!
       ? <TrendingUp className="w-4 h-4 text-green-500" />
@@ -3297,8 +3520,9 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     const escapeHtml = (value: string | number) => String(value)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
     const today = new Date().toLocaleString(lang === "zh" ? "zh-HK" : "en-GB");
+    const crossYearInsightsHtml = `<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:7px"><div style="border:1px solid #bfdbfe;border-radius:5px;padding:5px;background:#eff6ff"><strong style="display:block;font-size:8px;color:#1e3a8a">${lang === "zh" ? "跨年趨勢" : "Cross-year trend"}</strong><span style="display:block;margin-top:2px;font-size:8px;line-height:1.4;color:#475569">${escapeHtml(currentYearAvg === null ? (lang === "zh" ? "本學年暫未有已評分紀錄。" : "No current-year graded record yet.") : currentVsHistory === null ? (lang === "zh" ? `本學年平均 ${currentYearAvg}%（${currentYearGraded.length} 項評估）。` : `Current-year average: ${currentYearAvg}% across ${currentYearGraded.length} assessment(s).`) : (lang === "zh" ? `本學年平均 ${currentYearAvg}%，較過往${currentVsHistory >= 0 ? "上升" : "下降"} ${Math.abs(currentVsHistory)} 個百分點。` : `Current year is ${Math.abs(currentVsHistory)} percentage point(s) ${currentVsHistory >= 0 ? "above" : "below"} previous years.`))}</span></div><div style="border:1px solid #ddd6fe;border-radius:5px;padding:5px;background:#f5f3ff"><strong style="display:block;font-size:8px;color:#5b21b6">${lang === "zh" ? "班級基準" : "Class benchmark"}</strong><span style="display:block;margin-top:2px;font-size:8px;line-height:1.4;color:#475569">${escapeHtml(averageBenchmarkGap === null ? (lang === "zh" ? "未有足夠可比班級資料。" : "Not enough comparable class data.") : (lang === "zh" ? `平均較班級${averageBenchmarkGap >= 0 ? "高" : "低"} ${Math.abs(averageBenchmarkGap)} 個百分點。` : `Average is ${Math.abs(averageBenchmarkGap)} percentage point(s) ${averageBenchmarkGap >= 0 ? "above" : "below"} class.`))}</span></div><div style="border:1px solid #a7f3d0;border-radius:5px;padding:5px;background:#ecfdf5"><strong style="display:block;font-size:8px;color:#065f46">${lang === "zh" ? "證據覆蓋度" : "Evidence coverage"}</strong><span style="display:block;margin-top:2px;font-size:8px;line-height:1.4;color:#475569">${escapeHtml(lang === "zh" ? `${gradedAllYearsAssessments.length} 項評估 · ${detailedAssessmentHistory.length} 份逐題紀錄 · ${allYearsTopicAnalysis.length} 個課題目標` : `${gradedAllYearsAssessments.length} assessments · ${detailedAssessmentHistory.length} question records · ${allYearsTopicAnalysis.length} topic objectives`)}</span></div></div>`;
     const trendSvg = (() => {
-      if (allYearsTrend.length === 0) return `<p class="muted">${lang === "zh" ? "尚未有已評分紀錄。" : "No graded records yet."}</p>`;
+      if (allYearsTrend.length === 0) return `<p class="muted">${lang === "zh" ? "尚未有已評分紀錄。" : "No graded records yet."}</p>${crossYearInsightsHtml}`;
       const width = 660, height = 172, left = 34, right = 16, top = 20, bottom = 32;
       const plotWidth = width - left - right, plotHeight = height - top - bottom;
       const pointAt = (item: { label: string; pct: number }, index: number) => ({ x: allYearsTrend.length === 1 ? left + plotWidth / 2 : left + (index / (allYearsTrend.length - 1)) * plotWidth, y: top + ((100 - item.pct) / 100) * plotHeight });
@@ -3309,7 +3533,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         <polyline points="${points}" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
         ${allYearsTrend.map((item, index) => { const p = pointAt(item, index); const fill = item.pct >= 70 ? "#16a34a" : item.pct >= 50 ? "#d97706" : "#dc2626"; return `<circle cx="${p.x}" cy="${p.y}" r="3.5" fill="${fill}"/><title>${escapeHtml(item.label)}: ${item.pct}%</title>`; }).join("")}
         ${labels.map(index => { const p = pointAt(allYearsTrend[index], index); return `<text x="${p.x}" y="${height - 8}" text-anchor="middle" fill="#64748b" font-size="9">${escapeHtml(allYearsTrend[index].label)}</text>`; }).join("")}
-      </svg>`;
+      </svg>${crossYearInsightsHtml}`;
     })();
     const topicRadarUnits = Array.from(allYearsTopicAnalysis.reduce((groups, topic) => {
       const key = `${topic.subjectCode}-${topic.learningUnit}`;
@@ -3350,7 +3574,8 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     const subjectRows = subjectPerformance.map(item => `<span class="subject-chip"><strong>${escapeHtml(item.label)}</strong> ${item.pct}% <small>(${item.assessments})</small></span>`).join("");
     const assessmentRows = allYearsAssessments.map((item, index) => `<tr class="${index % 2 ? "striped" : ""}"><td><strong>${escapeHtml(item.title)}${item.code ? ` (${escapeHtml(item.code)})` : ""}</strong><span class="subline">${escapeHtml(item.yearLabel)} · ${escapeHtml(item.subjectName)} (${escapeHtml(item.subjectCode)}) · ${escapeHtml(item.className)} · ${escapeHtml(item.nature)}${item.date ? ` · ${escapeHtml(item.date)}` : ""}</span></td><td class="center">${item.isAbsent ? "ABS" : item.total !== null ? `${item.total}/${item.max}` : "—"}</td><td class="center score-${item.pct !== null && item.pct >= 70 ? "good" : item.pct !== null && item.pct >= 50 ? "mid" : "low"}">${item.pct !== null ? `${item.pct}%` : "—"}</td><td class="center">${item.rank !== null ? `${item.rank}/${item.classSize}` : "—"}</td></tr>`).join("");
     const detailSections = detailedAssessmentHistory.map(item => {
-      const overallGap = item.total !== null && item.classAverage !== null && item.max > 0 ? Math.round((((item.total - item.classAverage) / item.max) * 100) * 10) / 10 : null;
+      const diagnosis = assessmentDiagnostics.get(item.id);
+      const overallGap = diagnosis?.overallGap ?? (item.total !== null && item.classAverage !== null && item.max > 0 ? Math.round((((item.total - item.classAverage) / item.max) * 100) * 10) / 10 : null);
       const questionRows = item.questionDetails.map((question, index) => {
         const gap = question.score !== null && question.classAverage !== null ? question.score - question.classAverage : null;
         const level = question.pct !== null && question.pct >= 70 ? "good" : question.pct !== null && question.pct >= 50 ? "mid" : "low";
@@ -3359,11 +3584,36 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         return `<tr class="${index % 2 ? "striped" : ""}"><td><strong>${escapeHtml(question.label)}</strong> <span class="muted">/${question.max}</span></td><td><strong>${escapeHtml(topicLabel)}</strong><span class="subline">${escapeHtml(topicObjective)}</span></td><td class="center score-${level}">${question.score !== null ? `${question.score}/${question.max}` : "—"}</td><td class="center">${question.classAverage !== null ? `${question.classAverage.toFixed(1)}/${question.max}` : "—"}</td><td class="center ${gap === null ? "muted" : gap >= 0 ? "score-good" : "score-low"}">${gap !== null ? `${gap > 0 ? "+" : ""}${gap.toFixed(1)}` : "—"}</td><td class="center score-${level}">${question.pct !== null ? `${question.pct}%` : "—"}</td></tr>`;
       }).join("");
       const gapText = overallGap === null ? "—" : `${overallGap > 0 ? "+" : ""}${overallGap}%`;
-      return `<section class="detail-section"><header class="detail-header"><div><h3>${escapeHtml(item.title)}${item.code ? ` (${escapeHtml(item.code)})` : ""}</h3><p>${escapeHtml(item.yearLabel)} · ${escapeHtml(item.subjectName)} (${escapeHtml(item.subjectCode)}) · ${escapeHtml(item.className)} · ${escapeHtml(item.nature)}${item.date ? ` · ${escapeHtml(item.date)}` : ""}</p></div><div class="assessment-result"><strong class="score-${item.pct !== null && item.pct >= 70 ? "good" : item.pct !== null && item.pct >= 50 ? "mid" : "low"}">${item.isAbsent ? "ABS" : `${item.total}/${item.max}`}</strong><span>${item.isAbsent ? (lang === "zh" ? "缺席" : "Absent") : `${item.pct}% · ${lang === "zh" ? "排名" : "Rank"} ${item.rank ?? "—"}/${item.classSize || "—"}`}</span></div></header><div class="detail-stats"><div><span>${lang === "zh" ? "班級平均" : "Class average"}</span><strong>${item.classAverage !== null ? `${item.classAverage.toFixed(1)}/${item.max}` : "—"}</strong></div><div><span>${lang === "zh" ? "相對班級差距" : "Gap vs class"}</span><strong class="${overallGap === null ? "muted" : overallGap >= 0 ? "score-good" : "score-low"}">${gapText}</strong></div><div><span>${lang === "zh" ? "已輸入題目" : "Items entered"}</span><strong>${item.questionDetails.filter(question => question.score !== null).length}/${item.questionDetails.length}</strong></div></div><table><thead><tr><th>${lang === "zh" ? "題號" : "Question"}</th><th>${lang === "zh" ? "課題（程度／單元／目標）" : "Topic (level / unit / objective)"}</th><th>${lang === "zh" ? "個人得分" : "Student"}</th><th>${lang === "zh" ? "班級平均" : "Class avg"}</th><th>${lang === "zh" ? "差距" : "Gap"}</th><th>%</th></tr></thead><tbody>${questionRows}</tbody></table></section>`;
+      const priorityItems = diagnosis?.priorityQuestions.map(question => `${question.label} ${question.pct}%${question.topic ? ` · ${question.topic.learningUnit}` : ""}`).join("；") || "—";
+      const strengths = diagnosis?.strengthQuestions.map(question => `${question.label} ${question.pct}%`).join("；") || "—";
+      const diagnosticHtml = diagnosis ? `<div style="display:grid;grid-template-columns:1.35fr 1fr 1fr;gap:6px;padding:7px 9px;border-bottom:1px solid #e2e8f0;background:#f8fafc"><div style="border:1px solid #dbeafe;border-radius:4px;padding:5px;background:#eff6ff"><strong style="font-size:8px;color:#1e3a8a">${lang === "zh" ? "評估判讀" : "Assessment interpretation"}</strong><p style="margin:2px 0 0;font-size:8px;line-height:1.4;color:#475569">${escapeHtml(diagnosis.interpretation)}</p></div><div style="border:1px solid #fecaca;border-radius:4px;padding:5px;background:#fef2f2"><strong style="font-size:8px;color:#991b1b">${lang === "zh" ? "優先跟進" : "Priority follow-up"}</strong><p style="margin:2px 0 0;font-size:8px;line-height:1.4;color:#475569">${escapeHtml(priorityItems)}</p></div><div style="border:1px solid #bbf7d0;border-radius:4px;padding:5px;background:#f0fdf4"><strong style="font-size:8px;color:#166534">${lang === "zh" ? "可延伸強項" : "Strengths to extend"}</strong><p style="margin:2px 0 0;font-size:8px;line-height:1.4;color:#475569">${escapeHtml(strengths)}</p></div></div>` : "";
+      return `<section class="detail-section"><header class="detail-header"><div><h3>${escapeHtml(item.title)}${item.code ? ` (${escapeHtml(item.code)})` : ""}</h3><p>${escapeHtml(item.yearLabel)} · ${escapeHtml(item.subjectName)} (${escapeHtml(item.subjectCode)}) · ${escapeHtml(item.className)} · ${escapeHtml(item.nature)}${item.date ? ` · ${escapeHtml(item.date)}` : ""}</p></div><div class="assessment-result"><strong class="score-${item.pct !== null && item.pct >= 70 ? "good" : item.pct !== null && item.pct >= 50 ? "mid" : "low"}">${item.isAbsent ? "ABS" : `${item.total}/${item.max}`}</strong><span>${item.isAbsent ? (lang === "zh" ? "缺席" : "Absent") : `${item.pct}% · ${lang === "zh" ? "排名" : "Rank"} ${item.rank ?? "—"}/${item.classSize || "—"}`}</span></div></header><div class="detail-stats"><div><span>${lang === "zh" ? "班級平均" : "Class average"}</span><strong>${item.classAverage !== null ? `${item.classAverage.toFixed(1)}/${item.max}` : "—"}</strong></div><div><span>${lang === "zh" ? "相對班級差距" : "Gap vs class"}</span><strong class="${overallGap === null ? "muted" : overallGap >= 0 ? "score-good" : "score-low"}">${gapText}</strong></div><div><span>${lang === "zh" ? "已輸入題目" : "Items entered"}</span><strong>${item.questionDetails.filter(question => question.score !== null).length}/${item.questionDetails.length}</strong></div></div>${diagnosticHtml}<table><thead><tr><th>${lang === "zh" ? "題號" : "Question"}</th><th>${lang === "zh" ? "課題（程度／單元／目標）" : "Topic (level / unit / objective)"}</th><th>${lang === "zh" ? "個人得分" : "Student"}</th><th>${lang === "zh" ? "班級平均" : "Class avg"}</th><th>${lang === "zh" ? "差距" : "Gap"}</th><th>%</th></tr></thead><tbody>${questionRows}</tbody></table></section>`;
     }).join("");
     const currentTopicRows = topicAnalysis.filter(topic => topic.max > 0).map((topic, index) => `<tr class="${index % 2 ? "striped" : ""}"><td><strong>${escapeHtml(topic.name)}</strong></td><td class="center">${topic.earned}/${topic.max}</td><td class="center score-${topic.pct !== null && topic.pct >= 70 ? "good" : topic.pct !== null && topic.pct >= 50 ? "mid" : "low"}">${topic.pct !== null ? `${topic.pct}%` : "—"}</td></tr>`).join("");
     const allYearsTopicRows = allYearsTopicAnalysis.map((topic, index) => `<tr class="${index % 2 ? "striped" : ""}"><td><strong>${escapeHtml(topic.topicName)}</strong><span class="subline">${escapeHtml(topic.subjectCode)} · ${escapeHtml(topic.learningUnit)} · ${topic.assessmentCount} ${lang === "zh" ? "項評估／" : "assessments / "}${topic.itemCount} ${lang === "zh" ? "題" : "items"}</span></td><td class="center">${topic.earned}/${topic.max}</td><td class="center score-${topic.status === "strong" ? "good" : topic.status === "developing" ? "mid" : "low"}">${topic.pct}%</td><td class="center">${topic.status === "strong" ? (lang === "zh" ? "強項" : "Strength") : topic.status === "developing" ? (lang === "zh" ? "需加強" : "Developing") : (lang === "zh" ? "優先鞏固" : "Priority")}</td></tr>`).join("");
     const recommendationRows = teachingRecommendations.map(recommendation => `<div class="recommendation recommendation-${recommendation.tone}"><strong>${escapeHtml(recommendation.title)}</strong><p>${escapeHtml(recommendation.body)}</p><small>${escapeHtml(recommendation.topic.subjectCode)} · ${recommendation.topic.earned}/${recommendation.topic.max} · ${recommendation.topic.pct}% · ${recommendation.topic.assessmentCount} ${lang === "zh" ? "項評估" : "assessments"}</small></div>`).join("");
+    const crossYearInsightRows = [
+      {
+        title: lang === "zh" ? "跨年表現趨勢" : "Cross-year performance trend",
+        body: currentYearAvg === null
+          ? (lang === "zh" ? "本學年暫未有已評分紀錄。" : "No current-year graded record yet.")
+          : currentVsHistory === null
+          ? (lang === "zh" ? `本學年已有 ${currentYearGraded.length} 項已評分紀錄，平均 ${currentYearAvg}%。` : `${currentYearGraded.length} current-year assessment(s) are graded, averaging ${currentYearAvg}%.`)
+          : (lang === "zh" ? `本學年平均 ${currentYearAvg}%，較過往學年${currentVsHistory >= 0 ? "上升" : "下降"} ${Math.abs(currentVsHistory)} 個百分點。` : `The current-year average is ${currentYearAvg}%, ${Math.abs(currentVsHistory)} percentage point(s) ${currentVsHistory >= 0 ? "above" : "below"} previous years.`),
+      },
+      {
+        title: lang === "zh" ? "班級基準" : "Class benchmark",
+        body: averageBenchmarkGap === null
+          ? (lang === "zh" ? "尚未有足夠可比的班級平均資料。" : "Not enough comparable class-average data is available yet.")
+          : (lang === "zh" ? `在具班級平均的評估中，平均較班級${averageBenchmarkGap >= 0 ? "高" : "低"} ${Math.abs(averageBenchmarkGap)} 個百分點。` : `Across assessments with a class average, performance is ${Math.abs(averageBenchmarkGap)} percentage point(s) ${averageBenchmarkGap >= 0 ? "above" : "below"} the class benchmark.`),
+      },
+      {
+        title: lang === "zh" ? "分析證據覆蓋度" : "Analysis evidence coverage",
+        body: lang === "zh"
+          ? `已納入 ${gradedAllYearsAssessments.length} 項已評分評估、${detailedAssessmentHistory.length} 份逐題紀錄及 ${allYearsTopicAnalysis.length} 個有課題標記的學習目標；未標記課題的題目不會被歸入課題結論。`
+          : `Uses ${gradedAllYearsAssessments.length} graded assessment(s), ${detailedAssessmentHistory.length} question-level record(s), and ${allYearsTopicAnalysis.length} topic-tagged learning objective(s); untagged questions are not assigned to a topic conclusion.`,
+      },
+    ].map(item => `<div class="panel"><strong style="display:block;color:#1e3a8a;font-size:9px">${escapeHtml(item.title)}</strong><p style="margin:3px 0 0;font-size:8px;line-height:1.45;color:#475569">${escapeHtml(item.body)}</p></div>`).join("");
     const win = window.open("", "_blank");
     if (!win) { toast.error(lang === "zh" ? "無法開啟報告視窗，請允許彈出視窗。" : "Unable to open the report window. Please allow popups."); return; }
     win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(displayName)} — ${lang === "zh" ? "學生同科跨學年成績報告" : "Student Subject Performance Report"}</title><style>
@@ -3438,6 +3688,20 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                   <p className="text-xs text-slate-500">{lang === "zh" ? "以中英文姓名精確比對同一科目的既有歷史紀錄；不會合併其他科目同名學生的資料，分析只讀取資料。" : "History is exact-name matched within the current subject only; records from same-name students in other subjects are not combined, and no grades are changed."}</p>
                 </div>
                 <div className="flex items-center gap-3 text-xs"><span><b className="font-mono text-blue-700">{allYearsAvgPct !== null ? `${allYearsAvgPct}%` : "—"}</b> {lang === "zh" ? "歷年平均" : "all-years avg"}</span><span><b className="font-mono text-violet-700">{yearPerformance.length}</b> {lang === "zh" ? "學年" : "years"}</span><span><b className="font-mono text-emerald-700">{gradedAllYearsAssessments.length}</b> {lang === "zh" ? "已評分項" : "graded"}</span></div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 px-3 pt-3">
+                <div className="rounded-lg border border-blue-100 bg-blue-50/40 p-3">
+                  <p className="text-xs font-bold text-blue-800">{lang === "zh" ? "跨年趨勢判讀" : "Cross-year trend interpretation"}</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-600">{currentYearAvg !== null ? (currentVsHistory !== null ? (lang === "zh" ? `本學年平均 ${currentYearAvg}%，較過往學年${currentVsHistory >= 0 ? "上升" : "下降"} ${Math.abs(currentVsHistory)} 個百分點。` : `The current-year average is ${currentYearAvg}%, ${Math.abs(currentVsHistory)} percentage point(s) ${currentVsHistory >= 0 ? "above" : "below"} previous years.`) : (lang === "zh" ? `本學年已有 ${currentYearGraded.length} 項已評分紀錄，平均 ${currentYearAvg}%。` : `${currentYearGraded.length} current-year assessment(s) are graded, averaging ${currentYearAvg}%.`)) : (lang === "zh" ? "本學年暫未有已評分紀錄。" : "No current-year graded record yet.")}</p>
+                </div>
+                <div className="rounded-lg border border-violet-100 bg-violet-50/40 p-3">
+                  <p className="text-xs font-bold text-violet-800">{lang === "zh" ? "相對班級表現" : "Performance against class"}</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-600">{averageBenchmarkGap !== null ? (lang === "zh" ? `跨學年平均較同班平均${averageBenchmarkGap >= 0 ? "高" : "低"} ${Math.abs(averageBenchmarkGap)} 個百分點；此指標只使用有完整班級成績的評估。` : `Across comparable assessments, the student is ${Math.abs(averageBenchmarkGap)} percentage point(s) ${averageBenchmarkGap >= 0 ? "above" : "below"} the class average.`) : (lang === "zh" ? "目前資料不足以計算可比的班級基準。" : "Comparable class-benchmark data is not yet sufficient.")}</p>
+                </div>
+                <div className="rounded-lg border border-emerald-100 bg-emerald-50/40 p-3">
+                  <p className="text-xs font-bold text-emerald-800">{lang === "zh" ? "分析證據覆蓋度" : "Analysis evidence coverage"}</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-600">{lang === "zh" ? `已納入 ${gradedAllYearsAssessments.length} 項評估、${allYearsTopicAnalysis.length} 個有課題標記的學習目標及 ${detailedAssessmentHistory.length} 份逐題紀錄。` : `Uses ${gradedAllYearsAssessments.length} assessment(s), ${allYearsTopicAnalysis.length} topic-tagged learning objective(s), and ${detailedAssessmentHistory.length} question-level record(s).`}</p>
+                </div>
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,1fr)] gap-3 p-3">
                 <div className="min-h-52">
@@ -3618,9 +3882,10 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
               </div>
               <div className="divide-y divide-slate-100">
                 {detailedAssessmentHistory.map(assessment => {
-                  const totalGap = assessment.total !== null && assessment.classAverage !== null && assessment.max > 0
+                  const diagnosis = assessmentDiagnostics.get(assessment.id);
+                  const totalGap = diagnosis?.overallGap ?? (assessment.total !== null && assessment.classAverage !== null && assessment.max > 0
                     ? Math.round((((assessment.total - assessment.classAverage) / assessment.max) * 100) * 10) / 10
-                    : null;
+                    : null);
                   return (
                     <details key={assessment.id} className="group">
                       <summary className="list-none cursor-pointer px-4 py-3 hover:bg-slate-50 transition-colors">
@@ -3631,6 +3896,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                       </summary>
                       <div className="px-4 pb-4 pt-1 bg-slate-50/50">
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3"><div className="rounded-lg border border-slate-200 bg-white p-2 text-center"><p className="text-[11px] text-slate-500">{lang === "zh" ? "班級平均" : "Class average"}</p><p className="font-mono font-bold text-slate-700">{assessment.classAverage !== null ? `${assessment.classAverage.toFixed(1)}/${assessment.max}` : "—"}</p></div><div className="rounded-lg border border-slate-200 bg-white p-2 text-center"><p className="text-[11px] text-slate-500">{lang === "zh" ? "相對班級差距" : "Gap vs class"}</p><p className={cn("font-mono font-bold", totalGap === null ? "text-slate-400" : totalGap >= 0 ? "text-green-600" : "text-red-600")}>{totalGap !== null ? `${totalGap > 0 ? "+" : ""}${totalGap}%` : "—"}</p></div><div className="rounded-lg border border-slate-200 bg-white p-2 text-center col-span-2 sm:col-span-1"><p className="text-[11px] text-slate-500">{lang === "zh" ? "已輸入題目" : "Items entered"}</p><p className="font-mono font-bold text-blue-700">{assessment.questionDetails.filter(item => item.score !== null).length}/{assessment.questionDetails.length}</p></div></div>
+                        {diagnosis && <div className="grid grid-cols-1 lg:grid-cols-3 gap-2 mb-3"><div className="rounded-lg border border-blue-100 bg-blue-50/40 p-3"><p className="text-xs font-bold text-blue-800">{lang === "zh" ? "診斷摘要" : "Diagnostic summary"}</p><p className="mt-1 text-[11px] leading-relaxed text-slate-600">{diagnosis.interpretation}</p></div><div className="rounded-lg border border-red-100 bg-red-50/40 p-3"><p className="text-xs font-bold text-red-800">{lang === "zh" ? "優先跟進" : "Priority follow-up"}</p>{diagnosis.priorityQuestions.length > 0 ? <div className="mt-1.5 space-y-1">{diagnosis.priorityQuestions.map(question => <p key={question.id} className="text-[11px] text-slate-600"><b className="font-mono text-red-700">{question.label}</b> · {question.topic?.learningUnit || (lang === "zh" ? "未標記課題" : "Topic not tagged")} <span className="font-mono font-bold text-red-600">{question.pct}%</span></p>)}</div> : <p className="mt-1 text-[11px] text-slate-400">{lang === "zh" ? "暫無可判讀題目。" : "No interpretable question yet."}</p>}</div><div className="rounded-lg border border-emerald-100 bg-emerald-50/40 p-3"><p className="text-xs font-bold text-emerald-800">{lang === "zh" ? "相對班級及強項" : "Class comparison & strengths"}</p>{diagnosis.belowClassQuestions.length > 0 ? <p className="mt-1 text-[11px] leading-relaxed text-slate-600">{lang === "zh" ? "最大相對落差：" : "Largest relative gap: "}<b>{diagnosis.belowClassQuestions.map(question => `${question.label} (${question.gap!.toFixed(1)})`).join("、")}</b></p> : <p className="mt-1 text-[11px] text-slate-600">{lang === "zh" ? "暫未見低於班級平均的已輸入題目。" : "No entered item is below the class average."}</p>}{diagnosis.strengthQuestions.length > 0 && <p className="mt-1 text-[11px] leading-relaxed text-slate-600">{lang === "zh" ? "可延伸：" : "Extend: "}<b>{diagnosis.strengthQuestions.map(question => `${question.label} ${question.pct}%`).join("、")}</b></p>}</div></div>}
                         <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white"><table className="w-full min-w-[760px] text-xs"><thead><tr className="bg-blue-700 text-white"><th className="px-3 py-2 text-left">{lang === "zh" ? "題號" : "Question"}</th><th className="px-3 py-2 text-left min-w-64">{lang === "zh" ? "所屬課題（程度／單元／目標）" : "Topic (level / unit / objective)"}</th><th className="px-3 py-2 text-center">{lang === "zh" ? "個人得分" : "Student"}</th><th className="px-3 py-2 text-center">{lang === "zh" ? "班級平均" : "Class avg"}</th><th className="px-3 py-2 text-center">{lang === "zh" ? "差距" : "Gap"}</th><th className="px-3 py-2 text-center">%</th></tr></thead><tbody>{assessment.questionDetails.map((question, index) => {
                           const gap = question.score !== null && question.classAverage !== null ? question.score - question.classAverage : null;
                           return <tr key={question.id} className={index % 2 === 0 ? "bg-white" : "bg-slate-50 border-y border-slate-100"}><td className="px-3 py-2 font-semibold text-slate-700">{question.label}<span className="font-normal text-slate-400"> /{question.max}</span></td><td className="px-3 py-2 align-top">{question.topic ? <><p className="font-semibold text-slate-700">{question.topic.level} · {question.topic.learningUnit}</p><p className="text-[11px] leading-snug text-slate-500 mt-0.5">{question.topic.objective}</p></> : <span className="inline-flex rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">{lang === "zh" ? "未標記課題" : "Topic not tagged"}</span>}</td><td className={cn("px-3 py-2 text-center font-mono font-bold", question.pct !== null && question.pct >= 70 ? "text-green-600" : question.pct !== null && question.pct >= 50 ? "text-amber-600" : "text-red-600")}>{question.score !== null ? `${question.score}/${question.max}` : "—"}</td><td className="px-3 py-2 text-center font-mono text-slate-600">{question.classAverage !== null ? `${question.classAverage.toFixed(1)}/${question.max}` : "—"}</td><td className={cn("px-3 py-2 text-center font-mono font-bold", gap === null ? "text-slate-400" : gap >= 0 ? "text-green-600" : "text-red-600")}>{gap !== null ? `${gap > 0 ? "+" : ""}${gap.toFixed(1)}` : "—"}</td><td className={cn("px-3 py-2 text-center font-mono font-bold", question.pct !== null && question.pct >= 70 ? "text-green-600" : question.pct !== null && question.pct >= 50 ? "text-amber-600" : "text-red-600")}>{question.pct !== null ? `${question.pct}%` : "—"}</td></tr>;
