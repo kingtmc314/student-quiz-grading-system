@@ -38,7 +38,42 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.20.0";
+const APP_VERSION = "v1.21.0";
+
+type AssessmentDisplayItem = {
+  id: string;
+  code?: string;
+  title?: string;
+  natureId?: string;
+  nature?: string;
+};
+
+/** Sort assessment labels naturally: T1Q2 comes before T1Q10; blank codes fall back to title. */
+function sortAssessmentsByCode<T extends AssessmentDisplayItem>(items: T[]): T[] {
+  return [...items].sort((a, b) => {
+    const aLabel = (a.code || a.title || "").trim();
+    const bLabel = (b.code || b.title || "").trim();
+    const comparison = aLabel.localeCompare(bLabel, undefined, { numeric: true, sensitivity: "base" });
+    if (comparison !== 0) return comparison;
+    return (a.title || "").localeCompare(b.title || "", undefined, { numeric: true, sensitivity: "base" });
+  });
+}
+
+/** Groups CA records by their assessment nature (Quiz, Test, Assignment, etc.) and sorts each group by code. */
+function groupAssessmentsBySubcategory<T extends AssessmentDisplayItem>(items: T[], natureOrder: string[] = []) {
+  const orderIndex = new Map(natureOrder.map((id, index) => [id, index]));
+  const groups = new Map<string, { id: string; label: string; order: number; assessments: T[] }>();
+  items.forEach(item => {
+    const id = item.natureId || `label:${item.nature || "Unclassified"}`;
+    const label = item.nature || "Unclassified";
+    const existing = groups.get(id) ?? { id, label, order: orderIndex.get(item.natureId ?? "") ?? Number.MAX_SAFE_INTEGER, assessments: [] };
+    existing.assessments.push(item);
+    groups.set(id, existing);
+  });
+  return Array.from(groups.values())
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" }))
+    .map(group => ({ ...group, assessments: sortAssessmentsByCode(group.assessments) }));
+}
 
 // ─── Weighted Total Calculator ───────────────────────────────────────────────
 /**
@@ -2417,7 +2452,7 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
 
 // ─── Tab: Summary Table ───────────────────────────────────────────────────────
 function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId: string; classId: string }) {
-  const { getSchoolYear, getSubject, getClass, getNature, getWeightingScheme, getGlobalSubject } = useData();
+  const { getSchoolYear, getSubject, getClass, getNature, getWeightingScheme, getGlobalSubject, natures } = useData();
   const { t, lang } = useI18n();
 
   const year = yearId ? getSchoolYear(yearId) : undefined;
@@ -2448,18 +2483,34 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     const max = getAssessmentMax(a);
     const nature = getNature(a.natureId ?? "");
     const title = lang === "zh" && a.titleCht ? a.titleCht : a.title;
-    return { id: a.id, title, code: a.code, max, term: a.term, isExam: nature?.isExam ?? false };
+    return {
+      id: a.id,
+      title,
+      code: a.code,
+      max,
+      term: a.term,
+      natureId: a.natureId,
+      nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"),
+      isExam: nature?.isExam ?? false,
+    };
   });
 
-  // Group by term then CA/Exam, respecting the filter
+  // Group by term, then CA subcategory (Quiz/Test/Assignment etc.), then natural code order.
   const termGroups = ORDERED_TERMS.map(term => {
     const termAssess = allAssessData.filter(a => a.term === term);
-    const caAssess = termAssess.filter(a => !a.isExam);
-    const examAssess = termAssess.filter(a => a.isExam);
-    const visibleCA = summaryFilter !== "exam" ? caAssess : [];
-    const visibleExam = summaryFilter !== "ca" ? examAssess : [];
-    return { term, caAssess: visibleCA, examAssess: visibleExam, total: visibleCA.length + visibleExam.length };
+    const rawCA = termAssess.filter(a => !a.isExam);
+    const rawExam = termAssess.filter(a => a.isExam);
+    const visibleCA = summaryFilter !== "exam" ? rawCA : [];
+    const visibleExam = summaryFilter !== "ca" ? sortAssessmentsByCode(rawExam) : [];
+    const caSubcategories = groupAssessmentsBySubcategory(visibleCA, natures.filter(nature => !nature.isExam).map(nature => nature.id));
+    const caAssess = caSubcategories.flatMap(group => group.assessments);
+    return { term, caAssess, caSubcategories, examAssess: visibleExam, total: caAssess.length + visibleExam.length };
   }).filter(g => g.total > 0);
+
+  const displayedTermAssessments = (group: typeof termGroups[number]) => [
+    ...group.caSubcategories.flatMap(subcategory => subcategory.assessments),
+    ...group.examAssess,
+  ];
 
   const getStudentAssessmentTotal = (studentId: string, assessmentId: string) => {
     const a = assessments.find(x => x.id === assessmentId);
@@ -2468,9 +2519,9 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   };
 
   const handleExportCSV = () => {
-    const flatAssess = termGroups.flatMap(g => [...g.caAssess, ...g.examAssess]);
+    const flatAssess = termGroups.flatMap(displayedTermAssessments);
     const rows: string[][] = [];
-    rows.push(["#", lang === "zh" ? "姓名" : "Name", ...flatAssess.map(a => `${a.code || a.title} (/${a.max})`), lang === "zh" ? "CA總分" : "CA Total (%)", lang === "zh" ? "大考總分" : "Exam Total (%)"]);
+    rows.push(["#", lang === "zh" ? "姓名" : "Name", ...flatAssess.map(a => `${a.isExam ? (lang === "zh" ? "大考" : "Exam") : a.nature} · ${a.code || a.title} (/${a.max})`), lang === "zh" ? "CA總分" : "CA Total (%)", lang === "zh" ? "大考總分" : "Exam Total (%)"]);
     sortedStudents.forEach(s => {
       const caT = calcCATotal(s.id, assessments, getNature, scheme);
       const examT = calcExamTotal(s.id, assessments, getNature, scheme);
@@ -2492,16 +2543,22 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
   const handleExportExcel = async () => {
     const XLSX = await import("xlsx");
-    const flatAssess = termGroups.flatMap(g => [...g.caAssess, ...g.examAssess]);
-    // Build header rows matching the two-row table header
+    const flatAssess = termGroups.flatMap(displayedTermAssessments);
+    // Build header rows matching the term / subcategory / assessment hierarchy.
     const headerRow1: (string | null)[] = ["#", lang === "zh" ? "姓名" : "Name"];
     const headerRow2: (string | null)[] = ["", ""];
     termGroups.forEach(g => {
       const cols = g.caAssess.length + g.examAssess.length;
       headerRow1.push(termLabel(g.term, lang));
       for (let i = 1; i < cols; i++) headerRow1.push(null);
-      g.caAssess.forEach(() => headerRow2.push(lang === "zh" ? "小測" : "CA"));
-      g.examAssess.forEach(() => headerRow2.push(lang === "zh" ? "大考" : "Exam"));
+      g.caSubcategories.forEach(subcategory => {
+        headerRow2.push(subcategory.label);
+        for (let i = 1; i < subcategory.assessments.length; i++) headerRow2.push(null);
+      });
+      if (g.examAssess.length > 0) {
+        headerRow2.push(lang === "zh" ? "大考" : "Exam");
+        for (let i = 1; i < g.examAssess.length; i++) headerRow2.push(null);
+      }
     });
     headerRow1.push(lang === "zh" ? "CA總分" : "CA Total", lang === "zh" ? "大考總分" : "Exam Total");
     headerRow2.push("%", "%");
@@ -2523,7 +2580,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
       ];
     });
     const ws = XLSX.utils.aoa_to_sheet([headerRow1, headerRow2, assessRow, ...dataRows]);
-    // Style: merge term group header cells
+    // Merge term and CA-subcategory header cells.
     const merges: { s: { r: number; c: number }; e: { r: number; c: number } }[] = [];
     let col = 2;
     termGroups.forEach(g => {
@@ -2531,7 +2588,12 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
       if (span > 1) {
         merges.push({ s: { r: 0, c: col }, e: { r: 0, c: col + span - 1 } });
       }
-      col += span;
+      g.caSubcategories.forEach(subcategory => {
+        if (subcategory.assessments.length > 1) merges.push({ s: { r: 1, c: col }, e: { r: 1, c: col + subcategory.assessments.length - 1 } });
+        col += subcategory.assessments.length;
+      });
+      if (g.examAssess.length > 1) merges.push({ s: { r: 1, c: col }, e: { r: 1, c: col + g.examAssess.length - 1 } });
+      col += g.examAssess.length;
     });
     ws["!merges"] = merges;
     // Set column widths
@@ -2549,7 +2611,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
   // Compute per-column stats (avg, high, low) for the statistics footer
   const flatVisibleAssess = termGroups.flatMap(g =>
-    collapsedTerms.has(g.term) ? [] : [...g.caAssess, ...g.examAssess]
+    collapsedTerms.has(g.term) ? [] : displayedTermAssessments(g)
   );
   const colStats = flatVisibleAssess.map(a => {
     const scores = sortedStudents
@@ -2565,7 +2627,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const examStat = examScores.length > 0 ? { avg: Math.round(examScores.reduce((s,v)=>s+v,0)/examScores.length*10)/10, high: Math.max(...examScores), low: Math.min(...examScores) } : null;
 
   const handlePrint = () => {
-    const flatAssess = termGroups.flatMap(g => collapsedTerms.has(g.term) ? [] : [...g.caAssess, ...g.examAssess]);
+    const flatAssess = termGroups.flatMap(g => collapsedTerms.has(g.term) ? [] : displayedTermAssessments(g));
     const rows = sortedStudents.map(s => {
       const caT = calcCATotal(s.id, assessments, getNature, scheme);
       const examT = calcExamTotal(s.id, assessments, getNature, scheme);
@@ -2577,7 +2639,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         examT !== null ? `${examT}%` : "—",
       ];
     });
-    const headers = ["#", lang === "zh" ? "姓名" : "Name", ...flatAssess.map(a => a.code || a.title), lang === "zh" ? "CA總分" : "CA Total", lang === "zh" ? "大考總分" : "Exam Total"];
+    const headers = ["#", lang === "zh" ? "姓名" : "Name", ...flatAssess.map(a => `${a.isExam ? (lang === "zh" ? "大考" : "Exam") : a.nature} · ${a.code || a.title}`), lang === "zh" ? "CA總分" : "CA Total", lang === "zh" ? "大考總分" : "Exam Total"];
     const tableHtml = `<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-size:11px;width:100%">
       <thead><tr style="background:#f1f5f9">${headers.map(h => `<th>${h}</th>`).join("")}</tr></thead>
       <tbody>${rows.map((r,i) => `<tr style="background:${i%2===0?"#fff":"#f8fafc"}">${r.map(c => `<td style="text-align:center">${c}</td>`).join("")}</tr>`).join("")}</tbody>
@@ -2617,6 +2679,8 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
           id: a.id,
           title: lang === "zh" && a.titleCht ? a.titleCht : a.title,
           code: a.code, date: a.date,
+          term: a.term,
+          natureId: a.natureId,
           nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : "",
           isExam: nature?.isExam ?? false,
           isAbsent, total, max, pct, rank, classSize: classTotals.length,
@@ -2663,14 +2727,34 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         <p style="margin:0;font-size:20px;font-weight:800;color:${stat.color};font-family:monospace">${stat.value}</p>
       </div>`).join("");
 
-      const assessRows = assessmentHistory.map((a, i) => `<tr style="background:${i % 2 === 0 ? "#f8fafc" : "white"};border-bottom:1px solid #e2e8f0">
+      const renderAssessmentRow = (a: typeof assessmentHistory[number], index: number) => `<tr style="background:${index % 2 === 0 ? "#f8fafc" : "white"};border-bottom:1px solid #e2e8f0">
         <td style="padding:5px 8px;font-weight:600">${a.title}${a.code ? ` (${a.code})` : ""}</td>
         <td style="padding:5px 8px;text-align:center"><span style="background:${a.isExam ? "#ede9fe" : "#dbeafe"};color:${a.isExam ? "#6d28d9" : "#1d4ed8"};border-radius:3px;padding:1px 5px;font-size:9px;font-weight:600">${a.nature || (a.isExam ? "Exam" : "CA")}</span></td>
         <td style="padding:5px 8px;text-align:center;color:#64748b">${a.date || "—"}</td>
         <td style="padding:5px 8px;text-align:center;font-family:monospace">${a.isAbsent ? (lang === "zh" ? "缺席" : "ABS") : a.total !== null ? `${a.total}/${a.max}` : "—"}</td>
         <td style="padding:5px 8px;text-align:center;font-weight:700;font-family:monospace;color:${a.pct !== null ? colorForPct(a.pct) : "#94a3b8"}">${a.pct !== null ? `${a.pct}%` : "—"}</td>
         <td style="padding:5px 8px;text-align:center;font-family:monospace;color:#64748b">${a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
-      </tr>`).join("");
+      </tr>`;
+      let assessmentRowIndex = 0;
+      const assessRows = ORDERED_TERMS.flatMap(term => {
+        const termItems = assessmentHistory.filter(item => item.term === term);
+        if (termItems.length === 0) return [];
+        const caSubcategories = groupAssessmentsBySubcategory(
+          termItems.filter(item => !item.isExam),
+          natures.filter(nature => !nature.isExam).map(nature => nature.id),
+        );
+        const examItems = sortAssessmentsByCode(termItems.filter(item => item.isExam));
+        const rows = [`<tr style="background:#e2e8f0"><td colspan="6" style="padding:4px 8px;font-weight:800;color:#475569;font-size:9px;text-transform:uppercase">${termLabel(term, lang)}</td></tr>`];
+        caSubcategories.forEach(subcategory => {
+          rows.push(`<tr style="background:#eff6ff"><td colspan="6" style="padding:4px 8px;font-weight:700;color:#1d4ed8;font-size:9px">${lang === "zh" ? "小測" : "CA"} · ${subcategory.label} · ${lang === "zh" ? "按 Code 排序" : "code sorted"}</td></tr>`);
+          subcategory.assessments.forEach(item => rows.push(renderAssessmentRow(item, assessmentRowIndex++)));
+        });
+        if (examItems.length > 0) {
+          rows.push(`<tr style="background:#fef2f2"><td colspan="6" style="padding:4px 8px;font-weight:700;color:#b91c1c;font-size:9px">${lang === "zh" ? "大考" : "Exam"} · ${lang === "zh" ? "按 Code 排序" : "code sorted"}</td></tr>`);
+          examItems.forEach(item => rows.push(renderAssessmentRow(item, assessmentRowIndex++)));
+        }
+        return rows;
+      }).join("");
 
       const topicRows = topicAnalysis.map((topic, i) => `<tr style="background:${i % 2 === 0 ? "#f8fafc" : "white"};border-bottom:1px solid #e2e8f0">
         <td style="padding:5px 8px">${topic.code ? `<span style="font-family:monospace;color:#94a3b8;margin-right:4px;font-size:9px">${topic.code}</span>` : ""}<span style="font-weight:600">${topic.name}</span></td>
@@ -2779,10 +2863,10 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         <div className="bg-white rounded-xl border border-slate-200 overflow-auto">
           <table className="w-full text-xs">
             <thead>
-              {/* Row 1: Term group headers */}
+              {/* Row 1: term group headers */}
               <tr className="border-b border-slate-200 bg-slate-100">
-                <th className="px-3 py-1.5 text-left sticky left-0 bg-slate-100 w-10" rowSpan={2}>#</th>
-                <th className="px-3 py-1.5 text-left sticky left-10 bg-slate-100 min-w-[120px]" rowSpan={2}>{t("studentName")}</th>
+                <th className="px-3 py-1.5 text-left sticky left-0 bg-slate-100 w-10" rowSpan={3}>#</th>
+                <th className="px-3 py-1.5 text-left sticky left-10 bg-slate-100 min-w-[120px]" rowSpan={3}>{t("studentName")}</th>
                 {termGroups.map(g => {
                   const span = g.caAssess.length + g.examAssess.length;
                   return (
@@ -2791,41 +2875,36 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                     </th>
                   );
                 })}
-                <th className="px-2 py-1.5 text-center bg-blue-50 border-l border-slate-200" rowSpan={2}>
+                <th className="px-2 py-1.5 text-center bg-blue-50 border-l border-slate-200" rowSpan={3}>
                   <div className="font-bold text-blue-700">{lang === "zh" ? "CA總分" : "CA Total"}</div>
                   {scheme && <div className="text-blue-400 font-normal text-[9px]">{scheme.label}</div>}
                 </th>
-                <th className="px-2 py-1.5 text-center bg-red-50 border-l border-slate-200" rowSpan={2}>
+                <th className="px-2 py-1.5 text-center bg-red-50 border-l border-slate-200" rowSpan={3}>
                   <div className="font-bold text-red-700">{lang === "zh" ? "大考總分" : "Exam Total"}</div>
                   {scheme && <div className="text-red-400 font-normal text-[9px]">{scheme.label}</div>}
                 </th>
               </tr>
-              {/* Row 2: CA / Exam sub-headers then individual assessment columns */}
+              {/* Row 2: CA subcategories (Quiz / Test / Assignment etc.) */}
               <tr className="border-b border-slate-200 bg-slate-50">
                 {termGroups.map(g => (
                   <React.Fragment key={g.term}>
-                    {g.caAssess.length > 0 && (
-                      <>
-                        {g.caAssess.map((a, i) => (
-                          <th key={a.id} className={cn("px-2 py-1.5 text-center min-w-[70px]", i === 0 && "border-l border-slate-200")}>
-                            <div className="text-[9px] font-semibold text-slate-400 uppercase">{lang === "zh" ? "小測" : "CA"}</div>
-                            <div className="font-mono font-bold text-slate-700">{a.code || a.title}</div>
-                            <div className="text-slate-400 font-normal">/{a.max}</div>
-                          </th>
-                        ))}
-                      </>
-                    )}
+                    {g.caSubcategories.map((subcategory, index) => <th key={subcategory.id} colSpan={subcategory.assessments.length} className={cn("px-2 py-1 text-center text-[10px] font-semibold text-blue-600 bg-blue-50/70", index === 0 && "border-l border-slate-200")}>{subcategory.label}</th>)}
                     {g.examAssess.length > 0 && (
-                      <>
-                        {g.examAssess.map((a, i) => (
-                          <th key={a.id} className={cn("px-2 py-1.5 text-center min-w-[70px] bg-red-50/40", i === 0 && g.caAssess.length === 0 && "border-l border-slate-200")}>
-                            <div className="text-[9px] font-semibold text-red-400 uppercase">{lang === "zh" ? "大考" : "Exam"}</div>
-                            <div className="font-mono font-bold text-slate-700">{a.code || a.title}</div>
-                            <div className="text-slate-400 font-normal">/{a.max}</div>
-                          </th>
-                        ))}
-                      </>
+                      <th colSpan={g.examAssess.length} className={cn("px-2 py-1 text-center text-[10px] font-semibold text-red-500 bg-red-50/70", g.caAssess.length === 0 && "border-l border-slate-200")}>{lang === "zh" ? "大考" : "Exam"}</th>
                     )}
+                  </React.Fragment>
+                ))}
+              </tr>
+              {/* Row 3: assessment codes, natural-sorted within each CA subcategory */}
+              <tr className="border-b border-slate-200 bg-slate-50">
+                {termGroups.map(g => (
+                  <React.Fragment key={g.term}>
+                    {displayedTermAssessments(g).map((a, index) => (
+                      <th key={a.id} className={cn("px-2 py-1.5 text-center min-w-[70px]", a.isExam && "bg-red-50/40", index === 0 && "border-l border-slate-200")}>
+                        <div className="font-mono font-bold text-slate-700">{a.code || a.title}</div>
+                        <div className="text-slate-400 font-normal">/{a.max}</div>
+                      </th>
+                    ))}
                   </React.Fragment>
                 ))}
               </tr>
@@ -2841,7 +2920,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                     <td className="px-3 py-2 font-semibold text-slate-800 sticky left-10 bg-inherit">{displayName}</td>
                     {termGroups.map(g => (
                       <React.Fragment key={g.term}>
-                        {[...g.caAssess, ...g.examAssess].map((a, i) => {
+                        {displayedTermAssessments(g).map((a, i) => {
                           const total = getStudentAssessmentTotal(student.id, a.id);
                           const pct = total !== null && a.max > 0 ? Math.round((total / a.max) * 100) : null;
                           return (
@@ -3214,7 +3293,7 @@ function HierarchyAnalysisTable({ hierarchyData, lang, t }: {
 
 // ─── Tab: Student Profile ─────────────────────────────────────────────────────
 function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId: string; classId: string }) {
-  const { schoolYears, subjects, getSchoolYear, getSubject, getClass, getGlobalSubject, getNature, getWeightingScheme } = useData();
+  const { schoolYears, subjects, natures, getSchoolYear, getSubject, getClass, getGlobalSubject, getNature, getWeightingScheme } = useData();
   const { t, lang } = useI18n();
   const [studentId, setStudentId] = useState("");
 
@@ -3241,7 +3320,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     const classTotals = cls.students.map(s => getScoreTotal(a, s.id)).filter(v => v !== null) as number[];
     classTotals.sort((a, b) => b - a);
     const rank = total !== null ? classTotals.indexOf(total) + 1 : null;
-    return { id: a.id, title: lang === "zh" && a.titleCht ? a.titleCht : a.title, code: a.code, date: a.date, nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : "", isExam: nature?.isExam ?? false, total, max, pct, rank, classSize: classTotals.length };
+    return { id: a.id, title: lang === "zh" && a.titleCht ? a.titleCht : a.title, code: a.code, date: a.date, natureId: a.natureId, nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"), isExam: nature?.isExam ?? false, total, max, pct, rank, classSize: classTotals.length };
   }) : [];
 
   // Build 3-level hierarchy: Level > Learning Unit > Objective (only with score data)
@@ -3371,7 +3450,10 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
             title: lang === "zh" && historyAssessment.titleCht ? historyAssessment.titleCht : historyAssessment.title,
             code: historyAssessment.code,
             date: historyAssessment.date,
+            term: historyAssessment.term,
+            natureId: historyAssessment.natureId,
             nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"),
+            isExam: nature?.isExam ?? false,
             total, max, pct, isAbsent: entry?.isAbsent ?? false,
             rank: total !== null ? classTotals.indexOf(total) + 1 : null,
             classSize: classTotals.length,
@@ -3572,7 +3654,30 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     })();
     const yearRows = yearPerformance.map(item => `<tr><td><strong>${escapeHtml(item.yearLabel)}</strong><span class="subline">${escapeHtml(item.subjects)} · ${item.assessments} ${lang === "zh" ? "項評估" : "assessments"}</span></td><td class="right score-${item.pct >= 70 ? "good" : item.pct >= 50 ? "mid" : "low"}">${item.pct}%</td></tr>`).join("");
     const subjectRows = subjectPerformance.map(item => `<span class="subject-chip"><strong>${escapeHtml(item.label)}</strong> ${item.pct}% <small>(${item.assessments})</small></span>`).join("");
-    const assessmentRows = allYearsAssessments.map((item, index) => `<tr class="${index % 2 ? "striped" : ""}"><td><strong>${escapeHtml(item.title)}${item.code ? ` (${escapeHtml(item.code)})` : ""}</strong><span class="subline">${escapeHtml(item.yearLabel)} · ${escapeHtml(item.subjectName)} (${escapeHtml(item.subjectCode)}) · ${escapeHtml(item.className)} · ${escapeHtml(item.nature)}${item.date ? ` · ${escapeHtml(item.date)}` : ""}</span></td><td class="center">${item.isAbsent ? "ABS" : item.total !== null ? `${item.total}/${item.max}` : "—"}</td><td class="center score-${item.pct !== null && item.pct >= 70 ? "good" : item.pct !== null && item.pct >= 50 ? "mid" : "low"}">${item.pct !== null ? `${item.pct}%` : "—"}</td><td class="center">${item.rank !== null ? `${item.rank}/${item.classSize}` : "—"}</td></tr>`).join("");
+    let assessmentRowIndex = 0;
+    const renderAssessmentSummaryRow = (item: typeof allYearsAssessments[number]) => `<tr class="${assessmentRowIndex++ % 2 ? "striped" : ""}"><td><strong>${escapeHtml(item.code || item.title)}</strong>${item.code ? ` <span class="muted">· ${escapeHtml(item.title)}</span>` : ""}<span class="subline">${escapeHtml(item.subjectName)} (${escapeHtml(item.subjectCode)}) · ${escapeHtml(item.className)}${item.date ? ` · ${escapeHtml(item.date)}` : ""}</span></td><td class="center">${item.isAbsent ? "ABS" : item.total !== null ? `${item.total}/${item.max}` : "—"}</td><td class="center score-${item.pct !== null && item.pct >= 70 ? "good" : item.pct !== null && item.pct >= 50 ? "mid" : "low"}">${item.pct !== null ? `${item.pct}%` : "—"}</td><td class="center">${item.rank !== null ? `${item.rank}/${item.classSize}` : "—"}</td></tr>`;
+    const assessmentRows = Array.from(new Map(allYearsAssessments.map(item => [item.yearLabel, allYearsAssessments.filter(candidate => candidate.yearLabel === item.yearLabel)])).entries()).flatMap(([yearLabel, yearItems]) => {
+      const groupedRows = [`<tr><td colspan="4" style="padding:5px 6px;background:#e2e8f0;font-weight:800;color:#334155">${escapeHtml(yearLabel)}</td></tr>`];
+      ORDERED_TERMS.forEach(term => {
+        const termItems = yearItems.filter(item => item.term === term);
+        if (termItems.length === 0) return;
+        groupedRows.push(`<tr><td colspan="4" style="padding:4px 6px;background:#f8fafc;font-weight:700;color:#475569">${escapeHtml(termLabel(term, lang))}</td></tr>`);
+        const caSubcategories = groupAssessmentsBySubcategory(
+          termItems.filter(item => !item.isExam),
+          natures.filter(nature => !nature.isExam).map(nature => nature.id),
+        );
+        caSubcategories.forEach(subcategory => {
+          groupedRows.push(`<tr><td colspan="4" style="padding:4px 6px;background:#eff6ff;font-weight:700;color:#1d4ed8">${lang === "zh" ? "小測" : "CA"} · ${escapeHtml(subcategory.label)} · ${lang === "zh" ? "按 Code 排序" : "code sorted"}</td></tr>`);
+          subcategory.assessments.forEach(item => groupedRows.push(renderAssessmentSummaryRow(item)));
+        });
+        const examItems = sortAssessmentsByCode(termItems.filter(item => item.isExam));
+        if (examItems.length > 0) {
+          groupedRows.push(`<tr><td colspan="4" style="padding:4px 6px;background:#fef2f2;font-weight:700;color:#b91c1c">${lang === "zh" ? "大考" : "Exam"} · ${lang === "zh" ? "按 Code 排序" : "code sorted"}</td></tr>`);
+          examItems.forEach(item => groupedRows.push(renderAssessmentSummaryRow(item)));
+        }
+      });
+      return groupedRows;
+    }).join("");
     const detailSections = detailedAssessmentHistory.map(item => {
       const diagnosis = assessmentDiagnostics.get(item.id);
       const overallGap = diagnosis?.overallGap ?? (item.total !== null && item.classAverage !== null && item.max > 0 ? Math.round((((item.total - item.classAverage) / item.max) * 100) * 10) / 10 : null);
@@ -3770,8 +3875,12 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                     return rawAssess?.term === term;
                   });
                   if (termItems.length === 0) return null;
-                  const caItems = termItems.filter(a => !a.isExam);
-                  const examItems = termItems.filter(a => a.isExam);
+                  const caSubcategories = groupAssessmentsBySubcategory(
+                    termItems.filter(a => !a.isExam),
+                    natures.filter(nature => !nature.isExam).map(nature => nature.id),
+                  );
+                  const caItems = caSubcategories.flatMap(subcategory => subcategory.assessments);
+                  const examItems = sortAssessmentsByCode(termItems.filter(a => a.isExam));
                   // Compute per-term CA% and Exam% totals
                   const termCaEarned = caItems.reduce((s, a) => s + (a.total ?? 0), 0);
                   const termCaMax = caItems.reduce((s, a) => s + a.max, 0);
@@ -3806,21 +3915,17 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                       {/* CA section */}
                       {caItems.length > 0 && (
                         <>
-                          <div className="px-3 py-0.5 bg-slate-50">
-                            <span className="text-[9px] font-semibold text-slate-400 uppercase tracking-wider">{lang === "zh" ? "小測" : "CA"}</span>
+                          <div className="px-3 py-1 bg-slate-50 flex items-center justify-between gap-2">
+                            <span className="text-[9px] font-semibold text-slate-400 uppercase tracking-wider">{lang === "zh" ? "小測（按子類別及 Code 排序）" : "CA (grouped by subcategory and code)"}</span>
                           </div>
-                          <table className="w-full text-sm">
-                            <tbody>
-                              {caItems.map(a => (
-                                <tr key={a.id} className="border-b border-slate-50 last:border-0">
-                                  <td className="px-3 py-1.5"><div><span className="font-semibold text-slate-800 text-xs">{a.title}</span>{a.code && <span className="text-slate-400 text-xs ml-1">({a.code})</span>}</div></td>
-                                  <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.total !== null ? `${a.total}/${a.max}` : "—"}</td>
-                                  <td className="px-2 py-1.5 text-center">{a.pct !== null ? <span className={cn("font-mono font-bold text-xs", a.pct >= 70 ? "text-green-600" : a.pct >= 50 ? "text-amber-600" : "text-red-600")}>{a.pct}%</span> : <span className="text-slate-300 text-xs">—</span>}</td>
-                                  <td className="px-2 py-1.5 text-center font-mono text-slate-500 text-xs">{a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                          {caSubcategories.map(subcategory => <div key={subcategory.id} className="border-t border-blue-100 first:border-t-0"><div className="px-3 py-1 bg-blue-50/60 flex items-center gap-2"><span className="inline-flex rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">{subcategory.label}</span><span className="text-[10px] text-slate-400">{subcategory.assessments.length} {lang === "zh" ? "項 · Code 排序" : "items · code sorted"}</span></div><table className="w-full text-sm"><tbody>{subcategory.assessments.map(a => (
+                            <tr key={a.id} className="border-b border-slate-50 last:border-0">
+                              <td className="px-3 py-1.5"><div><span className="font-mono font-bold text-blue-700 text-xs">{a.code || "—"}</span><span className="text-slate-500 text-xs mx-1">·</span><span className="font-semibold text-slate-800 text-xs">{a.title}</span></div></td>
+                              <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.total !== null ? `${a.total}/${a.max}` : "—"}</td>
+                              <td className="px-2 py-1.5 text-center">{a.pct !== null ? <span className={cn("font-mono font-bold text-xs", a.pct >= 70 ? "text-green-600" : a.pct >= 50 ? "text-amber-600" : "text-red-600")}>{a.pct}%</span> : <span className="text-slate-300 text-xs">—</span>}</td>
+                              <td className="px-2 py-1.5 text-center font-mono text-slate-500 text-xs">{a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
+                            </tr>
+                          ))}</tbody></table></div>)}
                         </>
                       )}
                       {/* Exam section */}
