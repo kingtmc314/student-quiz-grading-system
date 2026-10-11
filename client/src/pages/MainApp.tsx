@@ -36,9 +36,9 @@ import {
 import { nanoid } from "nanoid";
 import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/markSheetParser";
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
-import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student } from "@/contexts/DataContext";
+import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.24.0";
+const APP_VERSION = "v1.25.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -244,7 +244,7 @@ function colorForPct(pct: number | null): string {
   return pct >= 70 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#ef4444";
 }
 
-type ScoreEntryState = "not-entered" | "absent" | "incomplete" | "complete";
+type ScoreEntryState = "not-entered" | "absent" | "missing" | "late" | "incomplete" | "complete";
 
 /** Returns numeric marks only. Blank/null fields are deliberately omitted, never converted to zero. */
 function getScoreMap(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }, studentId: string): Record<string, number> {
@@ -271,10 +271,12 @@ function getScoreEntryState(assessment: { markSheet: MarkItem[]; scores: ScoreEn
   const entry = assessment.scores.find(s => s.studentId === studentId);
   if (!entry) return "not-entered";
   if (entry.isAbsent) return "absent";
+  if (entry.assignmentStatus === "missing") return "missing";
   const questions = assessment.markSheet.filter(item => !item.isSection);
   if (questions.length === 0) return "not-entered";
   const scoreMap = getScoreMap(assessment, studentId);
-  return questions.every(question => typeof scoreMap[question.id] === "number") ? "complete" : "incomplete";
+  if (!questions.every(question => typeof scoreMap[question.id] === "number")) return "incomplete";
+  return entry.assignmentStatus === "late" ? "late" : "complete";
 }
 
 function getScoreTotal(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }, studentId: string): number | null {
@@ -285,13 +287,30 @@ function getScoreTotal(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[]
     .reduce((sum, item) => sum + scoreMap[item.id], 0);
 }
 
+/** The submitted total before applying the late-assignment reduction. */
+function getRawCompleteScoreTotal(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }, studentId: string): number | null {
+  const entry = assessment.scores.find(score => score.studentId === studentId);
+  if (!entry || entry.isAbsent || entry.assignmentStatus === "missing") return null;
+  const questions = assessment.markSheet.filter(item => !item.isSection);
+  if (questions.length === 0) return null;
+  const scoreMap = getScoreMap(assessment, studentId);
+  if (!questions.every(question => typeof scoreMap[question.id] === "number")) return null;
+  return questions.reduce((sum, item) => sum + scoreMap[item.id], 0);
+}
+
 /**
  * Personal-result total: a recorded ABS counts as 0 for that student's own
  * score and weighting. Class statistics and weakness analytics continue to
  * use getScoreTotal(), so ABS is excluded from those calculations.
  */
 function getPersonalScoreTotal(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }, studentId: string): number | null {
-  if (getScoreEntryState(assessment, studentId) === "absent") return 0;
+  const entry = assessment.scores.find(score => score.studentId === studentId);
+  const state = getScoreEntryState(assessment, studentId);
+  if (state === "absent" || state === "missing") return 0;
+  if (entry?.assignmentStatus === "late") {
+    const rawTotal = getRawCompleteScoreTotal(assessment, studentId);
+    return rawTotal === null ? null : Math.round(rawTotal * 70) / 100;
+  }
   return getScoreTotal(assessment, studentId);
 }
 
@@ -553,9 +572,10 @@ async function generateAssessmentPdf({
   const rows = students.map(student => {
     const entry = assessment.scores.find(score => score.studentId === student.id);
     const isAbsent = entry?.isAbsent ?? false;
+    const assignmentStatus = entry?.assignmentStatus;
     const total = isAbsent ? null : getScoreTotal(assessment, student.id);
     const pct = total !== null && totalMarks > 0 ? Math.round((total / totalMarks) * 100) : null;
-    return { student, isAbsent, total, pct };
+    return { student, isAbsent, assignmentStatus, total, pct };
   });
   const gradedRows = rows.filter((row): row is typeof row & { total: number } => row.total !== null);
   const completeEntries = assessment.scores.filter(entry => getScoreEntryState(assessment, entry.studentId) === "complete");
@@ -677,7 +697,7 @@ async function generateAssessmentPdf({
     <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "整體判讀、分布及教學焦點" : "Interpretation, Distribution & Teaching Focus"}</h2><div class="diagnostic-grid"><div class="diagnostic-card"><h3>${lang === "zh" ? "班級表現判讀" : "Class performance interpretation"}</h3><p>${assessmentNarrative}</p><p style="margin-top:6px">${lang === "zh" ? "課題標記覆蓋" : "Topic-tag coverage"}: <strong>${mappedQuestionCount}/${questions.length}</strong> ${lang === "zh" ? "題" : "items"}</p></div><div class="diagnostic-card"><h3>${lang === "zh" ? "成績分布（已評分學生）" : "Score distribution (graded students)"}</h3>${scoreDistributionRows}</div><div class="diagnostic-card"><h3>${lang === "zh" ? "優先重教題目" : "Priority re-teaching questions"}</h3><ul>${priorityList}</ul><p style="margin-top:6px">${lang === "zh" ? "做法：先用最低表現題作診斷；示範解法後以變式短題及退出卷確認理解。" : "Action: diagnose with the lowest-performing item, model the method, then use short variations and an exit ticket."}</p></div></div></section>
     <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "課題達成度分析" : "Topic Attainment Analysis"}</h2>${topicRows.length > 0 ? `<table class="pdf-table"><thead><tr><th>${lang === "zh" ? "課題／學習目標" : "Topic / learning objective"}</th><th class="pdf-number">${lang === "zh" ? "題數" : "Items"}</th><th class="pdf-number">${lang === "zh" ? "輸入" : "Entered"}</th><th class="pdf-number">${lang === "zh" ? "平均" : "Average"}</th><th class="pdf-number">%</th></tr></thead><tbody>${topicAnalysisRows}</tbody></table>` : `<p class="muted">${lang === "zh" ? "尚未有可作課題分析的題目。" : "No topic-tagged questions are available for analysis yet."}</p>`}<div class="diagnostic-grid" style="grid-template-columns:1fr 1fr;margin-top:8px"><div class="diagnostic-card"><h3>${lang === "zh" ? "優勢證據" : "Evidence of strength"}</h3><ul>${strengthList}</ul></div><div class="diagnostic-card"><h3>${lang === "zh" ? "建議課堂跟進" : "Suggested lesson follow-up"}</h3><p>${lang === "zh" ? "以低於 50% 的課題安排小組再教，將 50–69% 課題放進鞏固練習；70% 以上課題可加入多步或非例行題延伸。" : "Re-teach topics below 50% in a small group, reinforce 50–69% topics through consolidation practice, and extend 70%+ topics with multi-step or non-routine questions."}</p></div></div></section>
     <section class="pdf-section allow-split"><h2 class="pdf-heading">${lang === "zh" ? "逐題表現與課題對照" : "Question Analysis & Topic Mapping"}</h2>${questions.length > 0 ? `<table class="pdf-table"><thead><tr><th>${lang === "zh" ? "題號" : "Question"}</th><th>${lang === "zh" ? "所屬課題／目標" : "Topic / objective"}</th><th class="pdf-number">${lang === "zh" ? "平均" : "Average"}</th><th class="pdf-number">%</th><th class="pdf-number">${lang === "zh" ? "已輸入" : "Entered"}</th><th class="pdf-number">${lang === "zh" ? "滿分人數" : "Full Marks"}</th></tr></thead><tbody>${questionAnalysisRows}</tbody></table>` : `<p class="muted">${lang === "zh" ? "尚未設定評分表。" : "No mark sheet configured."}</p>`}</section>
-    <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "學生總分" : "Student Totals"}</h2><table class="pdf-table"><thead><tr><th>${lang === "zh" ? "班號" : "Class No."}</th><th>${lang === "zh" ? "學生姓名" : "Student"}</th><th class="pdf-number">${lang === "zh" ? "得分" : "Score"}</th><th class="pdf-number">%</th><th>${lang === "zh" ? "狀態" : "Status"}</th></tr></thead><tbody>${rows.map(row => { const studentName = lang === "zh" && row.student.nameCht ? row.student.nameCht : row.student.name; const state = getScoreEntryState(assessment, row.student.id); const status = row.isAbsent ? (lang === "zh" ? "缺席" : "Absent") : row.total !== null ? (lang === "zh" ? "已評分" : "Graded") : state === "incomplete" ? (lang === "zh" ? "未完成（不計分）" : "Incomplete (excluded)") : (lang === "zh" ? "未輸入" : "Not entered"); return `<tr><td>${escapeHtml(row.student.classNo)}</td><td>${escapeHtml(studentName)}</td><td class="pdf-number">${row.isAbsent ? "ABS" : row.total !== null ? `${row.total}/${totalMarks}` : "—"}</td><td class="pdf-number" style="color:${colorForScore(row.pct)};font-weight:700">${row.pct !== null ? `${row.pct}%` : "—"}</td><td>${status}</td></tr>`; }).join("")}</tbody></table></section>
+    <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "學生總分" : "Student Totals"}</h2><table class="pdf-table"><thead><tr><th>${lang === "zh" ? "班號" : "Class No."}</th><th>${lang === "zh" ? "學生姓名" : "Student"}</th><th class="pdf-number">${lang === "zh" ? "得分" : "Score"}</th><th class="pdf-number">%</th><th>${lang === "zh" ? "狀態" : "Status"}</th></tr></thead><tbody>${rows.map(row => { const studentName = lang === "zh" && row.student.nameCht ? row.student.nameCht : row.student.name; const state = getScoreEntryState(assessment, row.student.id); const status = row.isAbsent ? (lang === "zh" ? "缺席" : "Absent") : row.assignmentStatus === "missing" ? (lang === "zh" ? "欠交：個人 CA 計 0；不作分析" : "Missing: personal CA 0; excluded") : row.assignmentStatus === "late" ? (lang === "zh" ? "遲交：個人 CA 計 70%；不作分析" : "Late: personal CA 70%; excluded") : row.total !== null ? (lang === "zh" ? "已評分" : "Graded") : state === "incomplete" ? (lang === "zh" ? "未完成（不計分）" : "Incomplete (excluded)") : (lang === "zh" ? "未輸入" : "Not entered"); return `<tr><td>${escapeHtml(row.student.classNo)}</td><td>${escapeHtml(studentName)}</td><td class="pdf-number">${row.isAbsent ? "ABS" : row.assignmentStatus === "missing" ? "0" : row.assignmentStatus === "late" ? (lang === "zh" ? "遲交" : "Late") : row.total !== null ? `${row.total}/${totalMarks}` : "—"}</td><td class="pdf-number" style="color:${colorForScore(row.pct)};font-weight:700">${row.pct !== null ? `${row.pct}%` : "—"}</td><td>${status}</td></tr>`; }).join("")}</tbody></table></section>
     <footer class="pdf-footer"><span>${escapeHtml(yearLabel)} · ${escapeHtml(className)} · ${escapeHtml(assessmentTitle)}</span><span>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(generatedAt)}</span></footer>`;
   const printWindow = window.open("", "_blank");
   if (!printWindow) throw new Error(lang === "zh" ? "無法開啟報告視窗，請允許彈出視窗。" : "Unable to open the report window. Please allow popups.");
@@ -1233,9 +1253,10 @@ function GradingTab({
 
   const [assessmentId, setAssessmentId] = useState("");
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
-  const [studentListFilter, setStudentListFilter] = useState<"all" | "absent" | "missing">("all");
+  const [studentListFilter, setStudentListFilter] = useState<"all" | "absent" | "missing" | "late" | "pending">("all");
   const [draftScores, setDraftScores] = useState<Record<string, number | "">>({});
   const [isAbsent, setIsAbsent] = useState(false);
+  const [assignmentStatus, setAssignmentStatus] = useState<AssignmentSubmissionStatus | undefined>(undefined);
   const [dirty, setDirty] = useState(false);
 
   // Mark sheet editor state
@@ -1283,7 +1304,9 @@ function GradingTab({
   const visibleStudents = assessment ? sortedStudents.filter(student => {
     const state = getScoreEntryState(assessment, student.id);
     if (studentListFilter === "absent") return state === "absent";
-    if (studentListFilter === "missing") return state === "not-entered" || state === "incomplete";
+    if (studentListFilter === "missing") return state === "missing";
+    if (studentListFilter === "late") return state === "late";
+    if (studentListFilter === "pending") return state === "not-entered" || state === "incomplete";
     return true;
   }) : sortedStudents;
   const selectedStudent = sortedStudents.find(s => s.id === selectedStudentId) ?? null;
@@ -1316,6 +1339,7 @@ function GradingTab({
       const existing = assessment.scores.find(s => s.studentId === selectedStudentId);
       if (existing) {
         setIsAbsent(existing.isAbsent ?? false);
+        setAssignmentStatus(existing.assignmentStatus);
         const map: Record<string, number | ""> = {};
         if (Array.isArray(existing.scores)) {
           (existing.scores as Array<{ itemId: string; score: number | null }>).forEach(s => { map[s.itemId] = s.score ?? ""; });
@@ -1325,6 +1349,7 @@ function GradingTab({
         setDraftScores(map);
       } else {
         setIsAbsent(false);
+        setAssignmentStatus(undefined);
         setDraftScores({});
       }
       setDirty(false);
@@ -1348,10 +1373,14 @@ function GradingTab({
   const completeStudentCount = assessment ? sortedStudents.filter(student => getScoreEntryState(assessment, student.id) === "complete").length : 0;
   const incompleteStudentCount = assessment ? sortedStudents.filter(student => getScoreEntryState(assessment, student.id) === "incomplete").length : 0;
   const absentStudentCount = assessment ? sortedStudents.filter(student => getScoreEntryState(assessment, student.id) === "absent").length : 0;
-  const missingStudentCount = assessment ? sortedStudents.filter(student => {
+  const assignmentMissingStudentCount = assessment ? sortedStudents.filter(student => getScoreEntryState(assessment, student.id) === "missing").length : 0;
+  const lateStudentCount = assessment ? sortedStudents.filter(student => getScoreEntryState(assessment, student.id) === "late").length : 0;
+  const pendingStudentCount = assessment ? sortedStudents.filter(student => {
     const state = getScoreEntryState(assessment, student.id);
     return state === "not-entered" || state === "incomplete";
   }).length : 0;
+  const assessmentNature = assessment ? natures.find(nature => nature.id === assessment.natureId) : undefined;
+  const isAssignmentAssessment = !!assessmentNature && /assignment|homework|功課|作業/i.test(`${assessmentNature.name} ${assessmentNature.nameCht}`);
 
   const currentTotal = questions.reduce((s, q) => {
     const v = draftScores[q.id];
@@ -1376,9 +1405,9 @@ function GradingTab({
         const scoresRecord: Record<string, number | null> = {};
         questions.forEach(q => {
           // Keep blanks as null: only an explicit numeric 0 is a scored zero.
-          scoresRecord[q.id] = typeof draftScores[q.id] === "number" ? (draftScores[q.id] as number) : null;
+          scoresRecord[q.id] = assignmentStatus === "missing" ? null : (typeof draftScores[q.id] === "number" ? (draftScores[q.id] as number) : null);
         });
-        await upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: scoresRecord, isAbsent: false });
+        await upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: scoresRecord, isAbsent: false, assignmentStatus });
       }
       setDirty(false);
       toast.success(t("saved"));
@@ -1396,6 +1425,7 @@ function GradingTab({
     deleteScore(yearId, subjectId, classId, assessmentId, selectedStudentId);
     setDraftScores({});
     setIsAbsent(false);
+    setAssignmentStatus(undefined);
     setDirty(false);
     toast.success(t("deleted"));
   };
@@ -1410,7 +1440,7 @@ function GradingTab({
 
   const getStudentTotal = (studentId: string) => {
     if (!assessment) return null;
-    return getScoreTotal(assessment, studentId);
+    return getPersonalScoreTotal(assessment, studentId);
   };
 
   // Group mark sheet by section
@@ -1537,6 +1567,8 @@ function GradingTab({
             {assessment.scores.some(s => s.isAbsent) && (
               <><span>·</span><span className="text-orange-500">{assessment.scores.filter(s => s.isAbsent).length} ABS</span></>
             )}
+            {assignmentMissingStudentCount > 0 && <><span>·</span><span className="text-rose-600">{assignmentMissingStudentCount} {lang === "zh" ? "欠交（0分）" : "Missing (0)"}</span></>}
+            {lateStudentCount > 0 && <><span>·</span><span className="text-violet-600">{lateStudentCount} {lang === "zh" ? "遲交（70%）" : "Late (70%)"}</span></>}
           </div>
         )}
       </div>
@@ -1582,9 +1614,11 @@ function GradingTab({
               {([
                 ["all", lang === "zh" ? "全部" : "All", sortedStudents.length, "text-slate-600"],
                 ["absent", "ABS", absentStudentCount, "text-orange-700"],
-                ["missing", lang === "zh" ? "欠交" : "Missing", missingStudentCount, "text-amber-700"],
+                ["missing", lang === "zh" ? "欠交（0分）" : "Missing (0)", assignmentMissingStudentCount, "text-rose-700"],
+                ["late", lang === "zh" ? "遲交（70%）" : "Late (70%)", lateStudentCount, "text-violet-700"],
+                ["pending", lang === "zh" ? "未入分" : "Pending", pendingStudentCount, "text-amber-700"],
               ] as const).map(([filter, label, count, textClass]) => (
-                <button key={filter} onClick={() => setStudentListFilter(filter)} className={cn("rounded-full border px-2 py-1 text-[10px] font-bold transition-colors", studentListFilter === filter ? filter === "absent" ? "border-orange-300 bg-orange-100 text-orange-800" : filter === "missing" ? "border-amber-300 bg-amber-100 text-amber-800" : "border-blue-300 bg-blue-50 text-blue-700" : `border-slate-200 bg-white hover:bg-slate-50 ${textClass}`)}>
+                <button key={filter} onClick={() => setStudentListFilter(filter)} className={cn("rounded-full border px-2 py-1 text-[10px] font-bold transition-colors", studentListFilter === filter ? filter === "absent" ? "border-orange-300 bg-orange-100 text-orange-800" : filter === "missing" ? "border-rose-300 bg-rose-100 text-rose-800" : filter === "late" ? "border-violet-300 bg-violet-100 text-violet-800" : filter === "pending" ? "border-amber-300 bg-amber-100 text-amber-800" : "border-blue-300 bg-blue-50 text-blue-700" : `border-slate-200 bg-white hover:bg-slate-50 ${textClass}`)}>
                   {label} {count}
                 </button>
               ))}
@@ -1596,6 +1630,8 @@ function GradingTab({
                 const studentIsAbsent = studentEntry?.isAbsent ?? false;
                 const entryState = assessment ? getScoreEntryState(assessment, student.id) : "not-entered";
                 const isIncomplete = entryState === "incomplete";
+                const isAssignmentMissing = entryState === "missing";
+                const isLate = entryState === "late";
                 const isSelected = selectedStudentId === student.id;
                 const isGraded = total !== null || studentIsAbsent;
                 const displayName = lang === "zh" && student.nameCht ? student.nameCht : student.name;
@@ -1608,6 +1644,8 @@ function GradingTab({
                       </div>
                       {studentIsAbsent
                         ? <span className={cn("text-xs font-bold shrink-0 px-1.5 py-0.5 rounded", isSelected ? "bg-orange-300 text-orange-900" : "bg-orange-100 text-orange-600")}>ABS</span>
+                        : isAssignmentMissing ? <span className={cn("text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded", isSelected ? "bg-rose-300 text-rose-950" : "bg-rose-100 text-rose-700")}>{lang === "zh" ? "欠交 0" : "MISSING 0"}</span>
+                        : isLate ? <span className={cn("text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded", isSelected ? "bg-violet-300 text-violet-950" : "bg-violet-100 text-violet-700")}>{lang === "zh" ? "遲交 70%" : "LATE 70%"}</span>
                         : isIncomplete ? <span className={cn("text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded", isSelected ? "bg-amber-300 text-amber-950" : "bg-amber-100 text-amber-700")}>{lang === "zh" ? "未完成" : "PENDING"}</span>
                         : isGraded && <span className={cn("text-xs font-mono font-bold shrink-0", isSelected ? "text-blue-100" : "text-blue-600")}>{total}/{maxTotal}</span>
                       }
@@ -1638,7 +1676,7 @@ function GradingTab({
                   <div className="flex items-center gap-3">
                     {/* ABS Toggle */}
                     <button
-                      onClick={() => { setIsAbsent(prev => !prev); setDirty(true); }}
+                      onClick={() => { setIsAbsent(prev => !prev); setAssignmentStatus(undefined); setDirty(true); }}
                       className={cn(
                         "px-2.5 py-1 rounded text-xs font-bold border-2 transition-all",
                         isAbsent
@@ -1649,11 +1687,33 @@ function GradingTab({
                     >
                       ABS
                     </button>
+                    {isAssignmentAssessment && (
+                      <>
+                        <button
+                          onClick={() => { setAssignmentStatus(current => current === "late" ? undefined : "late"); setIsAbsent(false); setDirty(true); }}
+                          className={cn("px-2.5 py-1 rounded text-xs font-bold border-2 transition-all", assignmentStatus === "late" ? "bg-violet-600 border-violet-600 text-white" : "bg-white border-slate-300 text-slate-500 hover:border-violet-400 hover:text-violet-600")}
+                          title={lang === "zh" ? "遲交：分數以原分 × 70% 計入此學生的平時分，並排除弱點／課題分析" : "Late: raw score × 70% counts only in this student's CA; excluded from weakness/topic analysis"}
+                        >
+                          {lang === "zh" ? "遲交 70%" : "Late 70%"}
+                        </button>
+                        <button
+                          onClick={() => { setAssignmentStatus(current => current === "missing" ? undefined : "missing"); setIsAbsent(false); setDirty(true); }}
+                          className={cn("px-2.5 py-1 rounded text-xs font-bold border-2 transition-all", assignmentStatus === "missing" ? "bg-rose-600 border-rose-600 text-white" : "bg-white border-slate-300 text-slate-500 hover:border-rose-400 hover:text-rose-600")}
+                          title={lang === "zh" ? "欠交：直接以 0 分計入此學生的平時分，並排除弱點／課題分析" : "Missing: 0 counts only in this student's CA; excluded from weakness/topic analysis"}
+                        >
+                          {lang === "zh" ? "欠交 0分" : "Missing 0"}
+                        </button>
+                      </>
+                    )}
                     {!isAbsent && (
                       <div className="text-right">
-                        <p className="text-2xl font-bold font-mono text-blue-600 leading-none">{currentTotal}</p>
+                        <p className={cn("text-2xl font-bold font-mono leading-none", assignmentStatus === "missing" ? "text-rose-600" : assignmentStatus === "late" ? "text-violet-600" : "text-blue-600")}>{assignmentStatus === "missing" ? "0" : assignmentStatus === "late" && isDraftComplete ? Math.round(currentTotal * 70) / 100 : currentTotal}</p>
                         <p className={cn("text-xs", isDraftComplete ? "text-slate-400" : "text-amber-600 font-semibold")}>
-                          {isDraftComplete
+                          {assignmentStatus === "missing"
+                            ? (lang === "zh" ? "欠交：0 分只計入此學生的 CA；不作弱點分析" : "Missing: 0 counts only in personal CA; excluded from weakness analysis")
+                            : assignmentStatus === "late" && isDraftComplete
+                            ? (lang === "zh" ? `原分 ${currentTotal}/${maxTotal} → 計入 ${Math.round(currentTotal * 70) / 100}/${maxTotal}（70%）` : `Raw ${currentTotal}/${maxTotal} → counted ${Math.round(currentTotal * 70) / 100}/${maxTotal} (70%)`)
+                            : isDraftComplete
                             ? `/ ${maxTotal}${maxTotal > 0 ? ` (${Math.round((currentTotal / maxTotal) * 100)}%)` : ""}`
                             : (lang === "zh" ? `未完成 ${enteredQuestionCount}/${questions.length} 題 · 暫不計分` : `Incomplete ${enteredQuestionCount}/${questions.length} items · excluded`)}
                         </p>
@@ -1673,6 +1733,17 @@ function GradingTab({
                         <p className="text-sm text-orange-400 mt-1">{lang === "zh" ? "學生缺席，不計入成績" : "Student absent — excluded from analysis"}</p>
                         <button onClick={() => { setIsAbsent(false); setDirty(true); }} className="mt-3 text-xs text-orange-500 underline hover:text-orange-700">
                           {lang === "zh" ? "取消缺席" : "Remove ABS"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {assignmentStatus === "missing" && !isAbsent && (
+                    <div className="absolute inset-0 z-10 flex items-center justify-center bg-rose-50/90 backdrop-blur-sm">
+                      <div className="text-center max-w-sm px-5">
+                        <p className="text-3xl font-black text-rose-600 tracking-widest">{lang === "zh" ? "欠交 · 0 分" : "MISSING · 0"}</p>
+                        <p className="text-sm text-rose-700 mt-2">{lang === "zh" ? "會以 0 分計入該學生的平時分；不計入弱點、班級平均、排名或課題分析。" : "Counts as 0 only in this student's CA; excluded from weakness, class averages, rank and topic analysis."}</p>
+                        <button onClick={() => { setAssignmentStatus(undefined); setDirty(true); }} className="mt-3 text-xs text-rose-600 underline hover:text-rose-800">
+                          {lang === "zh" ? "取消欠交" : "Remove missing status"}
                         </button>
                       </div>
                     </div>
@@ -2543,7 +2614,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const cls = yearId && subjectId && classId ? getClass(yearId, subjectId, classId) : undefined;
 
   const [summaryFilter, setSummaryFilter] = useState<"all" | "ca" | "exam">("all");
-  const [summaryStudentFilter, setSummaryStudentFilter] = useState<"all" | "absent" | "missing">("all");
+  const [summaryStudentFilter, setSummaryStudentFilter] = useState<"all" | "absent" | "missing" | "late" | "pending">("all");
   const [collapsedTerms, setCollapsedTerms] = useState<Set<string>>(new Set());
 
   const toggleTerm = (term: string) => {
@@ -2570,15 +2641,19 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const getStudentStatusCounts = (studentId: string) => statusAssessments.reduce((counts, assessment) => {
     const state = getScoreEntryState(assessment, studentId);
     if (state === "absent") counts.absent += 1;
-    if (state === "not-entered" || state === "incomplete") counts.missing += 1;
+    if (state === "missing") counts.missing += 1;
+    if (state === "late") counts.late += 1;
+    if (state === "not-entered" || state === "incomplete") counts.pending += 1;
     return counts;
-  }, { absent: 0, missing: 0 });
+  }, { absent: 0, missing: 0, late: 0, pending: 0 });
   const visibleSummaryStudents = sortedStudents.filter(student => {
     const status = getStudentStatusCounts(student.id);
-    return summaryStudentFilter === "all" || (summaryStudentFilter === "absent" ? status.absent > 0 : status.missing > 0);
+    return summaryStudentFilter === "all" || status[summaryStudentFilter] > 0;
   });
   const totalAbsentRecords = sortedStudents.reduce((sum, student) => sum + getStudentStatusCounts(student.id).absent, 0);
   const totalMissingStudents = sortedStudents.filter(student => getStudentStatusCounts(student.id).missing > 0).length;
+  const totalLateStudents = sortedStudents.filter(student => getStudentStatusCounts(student.id).late > 0).length;
+  const totalPendingStudents = sortedStudents.filter(student => getStudentStatusCounts(student.id).pending > 0).length;
 
   // Build enriched assessment list
   const allAssessData = assessments.map(a => {
@@ -2780,7 +2855,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         const nature = getNature(a.natureId ?? "");
         const classTotals = cls.students.map(s => getScoreTotal(a, s.id)).filter(v => v !== null) as number[];
         classTotals.sort((a, b) => b - a);
-        const rank = !isAbsent && total !== null ? classTotals.indexOf(total) + 1 : null;
+        const rank = !isAbsent && !entry?.assignmentStatus && total !== null ? classTotals.indexOf(total) + 1 : null;
         return {
           id: a.id,
           title: lang === "zh" && a.titleCht ? a.titleCht : a.title,
@@ -2962,7 +3037,9 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         {([
           ["all", lang === "zh" ? "全部" : "All", sortedStudents.length, "border-blue-300 bg-blue-50 text-blue-700"],
           ["absent", "ABS", totalAbsentRecords, "border-orange-300 bg-orange-50 text-orange-700"],
-          ["missing", lang === "zh" ? "欠交" : "Missing", totalMissingStudents, "border-amber-300 bg-amber-50 text-amber-700"],
+          ["missing", lang === "zh" ? "欠交（0分）" : "Missing (0)", totalMissingStudents, "border-rose-300 bg-rose-50 text-rose-700"],
+          ["late", lang === "zh" ? "遲交（70%）" : "Late (70%)", totalLateStudents, "border-violet-300 bg-violet-50 text-violet-700"],
+          ["pending", lang === "zh" ? "未入分" : "Pending", totalPendingStudents, "border-amber-300 bg-amber-50 text-amber-700"],
         ] as const).map(([filter, label, count, activeClass]) => (
           <button key={filter} onClick={() => setSummaryStudentFilter(filter)} className={cn("rounded-full border px-2.5 py-1 text-xs font-bold transition-colors", summaryStudentFilter === filter ? activeClass : "border-slate-200 bg-white text-slate-600 hover:bg-slate-100")}>
             {label} {count}
@@ -3043,15 +3120,19 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                           const total = getStudentAssessmentTotal(student.id, a.id);
                           const sourceAssessment = assessments.find(assessment => assessment.id === a.id);
                           const isAbsent = sourceAssessment ? getScoreEntryState(sourceAssessment, student.id) === "absent" : false;
+                          const assignmentStatus = sourceAssessment?.scores.find(score => score.studentId === student.id)?.assignmentStatus;
                           const pct = total !== null && a.max > 0 ? Math.round((total / a.max) * 100) : null;
                           return (
                             <td key={a.id} className={cn("px-2 py-2 text-center", a.isExam && "bg-red-50/20", i === 0 && "border-l border-slate-100")}>
                               {isAbsent ? (
                                 <span className="font-mono font-bold text-orange-600">ABS (0)</span>
+                              ) : assignmentStatus === "missing" ? (
+                                <span className="font-mono font-bold text-rose-600">{lang === "zh" ? "欠交 (0)" : "Missing (0)"}</span>
                               ) : total !== null ? (
                                 <div>
                                   <span className={cn("font-mono font-bold", pct !== null && pct >= 70 ? "text-green-600" : pct !== null && pct >= 50 ? "text-amber-600" : "text-red-600")}>{total}</span>
                                   {pct !== null && <span className="text-slate-400 text-[10px] ml-0.5">({pct}%)</span>}
+                                  {assignmentStatus === "late" && <span className="block text-[9px] font-bold text-violet-600">{lang === "zh" ? "遲交 · 70%" : "Late · 70%"}</span>}
                                 </div>
                               ) : <span className="text-slate-300">—</span>}
                             </td>
@@ -3446,8 +3527,8 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     const nature = getNature(a.natureId ?? "");
     const classTotals = cls.students.map(s => getScoreTotal(a, s.id)).filter(v => v !== null) as number[];
     classTotals.sort((a, b) => b - a);
-    const rank = !entry?.isAbsent && total !== null ? classTotals.indexOf(total) + 1 : null;
-    return { id: a.id, title: lang === "zh" && a.titleCht ? a.titleCht : a.title, code: a.code, date: a.date, natureId: a.natureId, nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"), isExam: nature?.isExam ?? false, isAbsent: entry?.isAbsent ?? false, entryState, total, max, pct, rank, classSize: classTotals.length };
+    const rank = !entry?.isAbsent && !entry?.assignmentStatus && total !== null ? classTotals.indexOf(total) + 1 : null;
+    return { id: a.id, title: lang === "zh" && a.titleCht ? a.titleCht : a.title, code: a.code, date: a.date, natureId: a.natureId, nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"), isExam: nature?.isExam ?? false, isAbsent: entry?.isAbsent ?? false, assignmentStatus: entry?.assignmentStatus, entryState, total, max, pct, rank, classSize: classTotals.length };
   }) : [];
 
   // Build 3-level hierarchy: Level > Learning Unit > Objective (only with score data)
@@ -3503,6 +3584,8 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const absentAssessments = assessmentHistory.filter(item => item.isAbsent);
   const absentCAAssessments = absentAssessments.filter(item => !item.isExam);
   const absentExamAssessments = absentAssessments.filter(item => item.isExam);
+  const missingAssignments = assessmentHistory.filter(item => item.assignmentStatus === "missing");
+  const lateAssignments = assessmentHistory.filter(item => item.assignmentStatus === "late");
   const caTotalWithoutAbs = student ? calcCATotal(student.id, assessments, getNature, scheme, false) : null;
   const examTotalWithoutAbs = student ? calcExamTotal(student.id, assessments, getNature, scheme, false) : null;
   const caAbsImpact = caTotal !== null && caTotalWithoutAbs !== null ? Math.max(0, Math.round((caTotalWithoutAbs - caTotal) * 10) / 10) : null;
@@ -3590,8 +3673,8 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
             natureId: historyAssessment.natureId,
             nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"),
             isExam: nature?.isExam ?? false,
-            total, max, pct, isAbsent: entry?.isAbsent ?? false, entryState: getScoreEntryState(historyAssessment, historyStudent.id),
-            rank: !entry?.isAbsent && total !== null ? classTotals.indexOf(total) + 1 : null,
+            total, max, pct, isAbsent: entry?.isAbsent ?? false, assignmentStatus: entry?.assignmentStatus, entryState: getScoreEntryState(historyAssessment, historyStudent.id),
+            rank: !entry?.isAbsent && !entry?.assignmentStatus && total !== null ? classTotals.indexOf(total) + 1 : null,
             classSize: classTotals.length,
             classAverage: classTotals.length > 0 ? classTotals.reduce((sum, value) => sum + value, 0) / classTotals.length : null,
             questionDetails,
@@ -3707,6 +3790,10 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
       : 0;
     const interpretation = assessment.isAbsent
       ? (lang === "zh" ? "此評估標示為缺席，未納入成績、排名或課題診斷。" : "This assessment is recorded as absent and is excluded from score, rank and topic diagnostics.")
+      : assessment.assignmentStatus === "missing"
+      ? (lang === "zh" ? "此作業標示為欠交，會以 0 分計入個人 CA，但不納入班級平均、排名、弱點或課題診斷。" : "This assignment is marked missing: it counts as 0 in the student's CA, but is excluded from class averages, rank, weakness and topic diagnostics.")
+      : assessment.assignmentStatus === "late"
+      ? (lang === "zh" ? "此作業標示為遲交，原分 × 70% 計入個人 CA，但不納入班級平均、排名、弱點或課題診斷。" : "This assignment is marked late: raw score × 70% counts in the student's CA, but is excluded from class averages, rank, weakness and topic diagnostics.")
       : assessment.pct === null
       ? (lang === "zh" ? "尚未有可供判讀的個人成績。" : "No individual score is available for interpretation yet.")
       : lang === "zh"
@@ -3791,6 +3878,9 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     const yearRows = yearPerformance.map(item => `<tr><td><strong>${escapeHtml(item.yearLabel)}</strong><span class="subline">${escapeHtml(item.subjects)} · ${item.assessments} ${lang === "zh" ? "項評估" : "assessments"}</span></td><td class="right score-${item.pct >= 70 ? "good" : item.pct >= 50 ? "mid" : "low"}">${item.pct}%</td></tr>`).join("");
     const subjectRows = subjectPerformance.map(item => `<span class="subject-chip"><strong>${escapeHtml(item.label)}</strong> ${item.pct}% <small>(${item.assessments})</small></span>`).join("");
     const absenceImpactHtml = absentAssessments.length > 0 ? `<div style="margin-top:10px;border:1px solid #fdba74;border-radius:7px;padding:8px;background:#fff7ed"><strong style="display:block;color:#9a3412;font-size:10px">${lang === "zh" ? "ABS 對個人成績及加權的影響" : "ABS impact on personal results & weighting"}</strong><p style="margin:3px 0 0;font-size:8px;line-height:1.45;color:#9a3412">${lang === "zh" ? `此學生有 ${absentAssessments.length} 項 ABS；每項以 0 分計入此學生的個人成績及加權總分，但不納入班級平均、排名、弱點或課題分析。` : `This student has ${absentAssessments.length} ABS record(s). Each counts as 0 in the student's own results and weighting, but is excluded from class averages, rank, weakness and topic analysis.`}</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px"><div style="border:1px solid #fed7aa;border-radius:5px;padding:5px;background:#fff"><strong style="font-size:8px;color:#1e3a8a">${lang === "zh" ? "小測（CA）" : "CA"} · ${absentCAAssessments.length} ABS</strong><p style="margin:2px 0 0;font-size:8px;color:#475569">${escapeHtml(absentCAAssessments.length === 0 ? (lang === "zh" ? "沒有 CA 缺席紀錄。" : "No CA absences.") : caAbsImpact !== null ? (lang === "zh" ? `現有加權 ${caTotal ?? "—"}%；只計完整紀錄 ${caTotalWithoutAbs ?? "—"}%；相差 ${caAbsImpact} 個百分點。` : `Weighted ${caTotal ?? "—"}%; completed-only ${caTotalWithoutAbs ?? "—"}%; impact ${caAbsImpact} point(s).`) : (lang === "zh" ? `現有加權 ${caTotal ?? "—"}%；未有其他完整 CA 成績可比較。` : `Weighted ${caTotal ?? "—"}%; no other complete CA result for comparison.`))}</p></div><div style="border:1px solid #fed7aa;border-radius:5px;padding:5px;background:#fff"><strong style="font-size:8px;color:#991b1b">${lang === "zh" ? "大考（Exam）" : "Exam"} · ${absentExamAssessments.length} ABS</strong><p style="margin:2px 0 0;font-size:8px;color:#475569">${escapeHtml(absentExamAssessments.length === 0 ? (lang === "zh" ? "沒有大考缺席紀錄。" : "No exam absences.") : examAbsImpact !== null ? (lang === "zh" ? `現有加權 ${examTotal ?? "—"}%；只計完整紀錄 ${examTotalWithoutAbs ?? "—"}%；相差 ${examAbsImpact} 個百分點。` : `Weighted ${examTotal ?? "—"}%; completed-only ${examTotalWithoutAbs ?? "—"}%; impact ${examAbsImpact} point(s).`) : (lang === "zh" ? `現有加權 ${examTotal ?? "—"}%；未有其他完整大考成績可比較。` : `Weighted ${examTotal ?? "—"}%; no other complete exam result for comparison.`))}</p></div></div></div>` : "";
+    const assignmentImpactHtml = missingAssignments.length > 0 || lateAssignments.length > 0
+      ? `<div style="margin-top:8px;border:1px solid #c4b5fd;border-radius:7px;padding:8px;background:#f5f3ff"><strong style="display:block;color:#5b21b6;font-size:10px">${lang === "zh" ? "作業提交狀態對平時分的影響" : "Assignment submission status & CA impact"}</strong><p style="margin:3px 0 0;font-size:8px;line-height:1.45;color:#5b21b6">${lang === "zh" ? `遲交 ${lateAssignments.length} 項：原分 × 70% 計入此學生的 CA；欠交 ${missingAssignments.length} 項：直接以 0 分計入。兩者均不納入班級平均、排名、弱點或課題分析。` : `${lateAssignments.length} late item(s) count as raw score × 70% in this student's CA; ${missingAssignments.length} missing item(s) count as 0. Both are excluded from class averages, rank, weakness and topic analysis.`}</p></div>`
+      : "";
     let assessmentRowIndex = 0;
     const renderAssessmentSummaryRow = (item: typeof allYearsAssessments[number]) => `<tr class="${assessmentRowIndex++ % 2 ? "striped" : ""}"><td><strong>${escapeHtml(item.code || item.title)}</strong>${item.code ? ` <span class="muted">· ${escapeHtml(item.title)}</span>` : ""}<span class="subline">${escapeHtml(item.subjectName)} (${escapeHtml(item.subjectCode)}) · ${escapeHtml(item.className)}${item.date ? ` · ${escapeHtml(item.date)}` : ""}</span></td><td class="center">${item.isAbsent ? "ABS (0)" : item.total !== null ? `${item.total}/${item.max}` : "—"}</td><td class="center score-${item.pct !== null && item.pct >= 70 ? "good" : item.pct !== null && item.pct >= 50 ? "mid" : "low"}">${item.pct !== null ? `${item.pct}%` : "—"}</td><td class="center">${item.rank !== null ? `${item.rank}/${item.classSize}` : "—"}</td></tr>`;
     const assessmentRows = Array.from(new Map(allYearsAssessments.map(item => [item.yearLabel, allYearsAssessments.filter(candidate => candidate.yearLabel === item.yearLabel)])).entries()).flatMap(([yearLabel, yearItems]) => {
@@ -3860,7 +3950,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     if (!win) { toast.error(lang === "zh" ? "無法開啟報告視窗，請允許彈出視窗。" : "Unable to open the report window. Please allow popups."); return; }
     win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(displayName)} — ${lang === "zh" ? "學生同科跨學年成績報告" : "Student Subject Performance Report"}</title><style>
       *{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff;color:#1e293b;font-family:Arial,'Microsoft JhengHei','PingFang TC',sans-serif;font-size:11px;line-height:1.45}.document{width:210mm;min-height:297mm;margin:0 auto;padding:14mm 13mm 16mm;background:#fff}.header{border-bottom:3px solid #1d4ed8;padding-bottom:10px;margin-bottom:12px;display:flex;justify-content:space-between;gap:12px}.header h1{font-size:21px;color:#1d4ed8;margin:0 0 2px}.header p{margin:0;color:#64748b;font-size:9px}.align-right{text-align:right}.section{margin-top:14px;break-inside:avoid}.section-title{font-size:13px;font-weight:800;margin:0 0 7px;border-left:4px solid #2563eb;padding-left:8px}.question-analysis{break-inside:auto;page-break-inside:auto}.question-analysis>.section-title{break-after:avoid-page;page-break-after:avoid}.question-analysis>.section-title+.detail-section{break-before:avoid-page;page-break-before:avoid}.snapshot{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:10px}.panel{border:1px solid #dbeafe;border-radius:7px;padding:8px;background:#fbfdff}.summary-stats,.detail-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.summary-stats>div,.detail-stats>div{border:1px solid #e2e8f0;border-radius:5px;padding:5px;text-align:center;background:#fff}.summary-stats span,.detail-stats span{display:block;font-size:8px;color:#64748b}.summary-stats strong{display:block;margin-top:1px;color:#1d4ed8;font-size:15px;font-family:monospace}.trend-chart{width:100%;height:145px;display:block}.subject-chip{display:inline-block;margin:2px;padding:2px 5px;background:#eff6ff;border-radius:4px;color:#334155;font-size:8px}.subject-chip small,.subline{color:#64748b}.subline{display:block;font-size:8px;font-weight:400;margin-top:1px}table{width:100%;border-collapse:collapse;font-size:9px}th{background:#1d4ed8;color:#fff;padding:5px 6px;text-align:left}td{padding:4px 6px;border-bottom:1px solid #e2e8f0}.striped td{background:#f8fafc}.center{text-align:center;font-family:monospace}.right{text-align:right;font-family:monospace}.muted{color:#94a3b8}.score-good{color:#16a34a!important}.score-mid{color:#d97706!important}.score-low{color:#dc2626!important}.detail-section{margin-top:12px;border:1px solid #bfdbfe;border-radius:7px;overflow:hidden;break-inside:avoid}.detail-header{display:flex;justify-content:space-between;gap:12px;padding:7px 9px;background:#eff6ff;border-bottom:1px solid #bfdbfe}.detail-header h3{margin:0;font-size:11px;color:#1e3a8a}.detail-header p{margin:2px 0 0;color:#475569;font-size:8px}.assessment-result{text-align:right}.assessment-result strong{display:block;font-size:13px;font-family:monospace}.assessment-result span{font-size:8px;color:#64748b}.detail-stats{padding:7px 9px;border-bottom:1px solid #e2e8f0}.detail-stats strong{display:block;font-size:10px;font-family:monospace;margin-top:1px}.topic-table{margin-top:4px}.recommendations{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:7px}.recommendation{border:1px solid #e2e8f0;border-radius:5px;padding:6px;background:#fff;font-size:8px}.recommendation strong{display:block;font-size:9px}.recommendation p{margin:3px 0;color:#475569;line-height:1.45}.recommendation small{color:#64748b}.recommendation-priority{border-color:#fecaca;background:#fef2f2}.recommendation-priority strong{color:#b91c1c}.recommendation-developing{border-color:#fde68a;background:#fffbeb}.recommendation-developing strong{color:#b45309}.recommendation-strong{border-color:#bbf7d0;background:#f0fdf4}.recommendation-strong strong{color:#15803d}.radar-layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(180px,.85fr);gap:9px;align-items:center;border:1px solid #dbeafe;border-radius:7px;padding:7px;background:#fbfdff}.topic-radar{display:block;width:100%;height:195px}.radar-legend{display:grid;gap:4px}.radar-legend-item{display:flex;gap:5px;align-items:flex-start;font-size:8px;line-height:1.2}.radar-legend-item strong{display:block;color:#334155}.radar-legend-item small{display:block;color:#64748b;margin-top:1px}.radar-dot{display:inline-flex;align-items:center;justify-content:center;flex:0 0 13px;height:13px;border-radius:50%;background:#2563eb;color:#fff;font-size:7px;font-weight:700}.footer{margin-top:16px;padding-top:7px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;color:#94a3b8;font-size:8px}@media print{@page{size:A4;margin:0}body{print-color-adjust:exact;-webkit-print-color-adjust:exact}.document{padding:14mm 13mm 16mm}.detail-section{break-inside:avoid}}
-    </style></head><body><main class="document"><header class="header"><div><h1>${lang === "zh" ? "學生同科跨學年成績報告" : "Student Subject Performance Report"}</h1><p>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(today)}</p></div><div class="align-right"><strong>${escapeHtml(displayName)}</strong><p>${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(student.classNo)} · ${escapeHtml(cls.name)} · ${escapeHtml(subjectName)} · ${escapeHtml(year.label)}</p></div></header><section class="section"><h2 class="section-title">${lang === "zh" ? `${subjectName} 表現（跨學年）` : `${subjectName} Performance (All Years)`}</h2><div class="snapshot"><div class="panel"><div class="summary-stats"><div><span>${lang === "zh" ? "歷年平均" : "All-years avg"}</span><strong class="score-${allYearsAvgPct !== null && allYearsAvgPct >= 70 ? "good" : allYearsAvgPct !== null && allYearsAvgPct >= 50 ? "mid" : "low"}">${allYearsAvgPct !== null ? `${allYearsAvgPct}%` : "—"}</strong></div><div><span>${lang === "zh" ? "已評分項" : "Graded"}</span><strong>${gradedAllYearsAssessments.length}</strong></div><div><span>${lang === "zh" ? "涉及學年" : "Years"}</span><strong>${yearPerformance.length}</strong></div></div><p style="margin:7px 0 2px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "歷年評估趨勢" : "All-years assessment trend"}</p>${trendSvg}</div><div class="panel"><p style="margin:0 0 5px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "學年摘要" : "School-year summary"}</p><table><tbody>${yearRows || `<tr><td class="muted">${lang === "zh" ? "尚未有歷史資料。" : "No history yet."}</td></tr>`}</tbody></table><p style="margin:8px 0 3px;font-size:8px;font-weight:700;color:#64748b">${lang === "zh" ? "本學科各學年平均" : "Subject-by-year averages"}</p><div>${subjectRows || `<span class="muted">—</span>`}</div></div></div>${absenceImpactHtml}</section>${topicRadarUnits.length > 0 ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "跨學年課題表現雷達圖" : "All-years Topic Performance Radar"}</h2><p class="muted" style="margin:0 0 6px;font-size:8px">${lang === "zh" ? "只按目前科目、以評分證據最多的六個學習單元繪製；每一軸附有得分、百分比及覆蓋評估數量。" : "For the current subject only, built from the six learning units with the most scored evidence; each axis includes score, percentage, and assessment coverage."}</p>${topicRadarSvg}</section>` : ""}${allYearsTopicRows ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "課題強弱分析及教學建議（本學科跨學年）" : "Topic Strengths, Needs & Teaching Recommendations (Current Subject, All Years)"}</h2><p class="muted" style="margin:0 0 6px;font-size:8px">${lang === "zh" ? "依本學科逐題課題標記的得分自動生成；結果包含已覆蓋的評估及題目數。" : "Auto-generated from current-subject question-level topic tags; evidence includes the assessments and items covered."}</p><table class="topic-table"><thead><tr><th>${lang === "zh" ? "課題" : "Topic"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th><th class="center">${lang === "zh" ? "狀態" : "Status"}</th></tr></thead><tbody>${allYearsTopicRows}</tbody></table>${recommendationRows ? `<div class="recommendations">${recommendationRows}</div>` : ""}</section>` : ""}<section class="section"><h2 class="section-title">${lang === "zh" ? "評估總覽（本學科跨學年）" : "Assessment Overview (Current Subject, All Years)"}</h2><table><thead><tr><th>${lang === "zh" ? "評估" : "Assessment"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th><th class="center">${lang === "zh" ? "排名" : "Rank"}</th></tr></thead><tbody>${assessmentRows || `<tr><td colspan="4" class="muted">—</td></tr>`}</tbody></table></section>${detailSections ? `<section class="section question-analysis"><h2 class="section-title">${lang === "zh" ? "每項評估逐題分析" : "Per-assessment Question Analysis"}</h2>${detailSections}</section>` : ""}${currentTopicRows ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "目前科目學習單元分析" : "Current Subject Learning Unit Analysis"}</h2><table><thead><tr><th>${lang === "zh" ? "學習單元" : "Learning unit"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th></tr></thead><tbody>${currentTopicRows}</tbody></table></section>` : ""}<footer class="footer"><span>${escapeHtml(displayName)} · ${lang === "zh" ? `${subjectName} 跨學年報告` : `${subjectName} all-years report`}</span><span>${lang === "zh" ? "由 Maths Analytics 生成" : "Generated by Maths Analytics"}</span></footer></main><script>window.onload=()=>window.print();<\/script></body></html>`);
+    </style></head><body><main class="document"><header class="header"><div><h1>${lang === "zh" ? "學生同科跨學年成績報告" : "Student Subject Performance Report"}</h1><p>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(today)}</p></div><div class="align-right"><strong>${escapeHtml(displayName)}</strong><p>${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(student.classNo)} · ${escapeHtml(cls.name)} · ${escapeHtml(subjectName)} · ${escapeHtml(year.label)}</p></div></header><section class="section"><h2 class="section-title">${lang === "zh" ? `${subjectName} 表現（跨學年）` : `${subjectName} Performance (All Years)`}</h2><div class="snapshot"><div class="panel"><div class="summary-stats"><div><span>${lang === "zh" ? "歷年平均" : "All-years avg"}</span><strong class="score-${allYearsAvgPct !== null && allYearsAvgPct >= 70 ? "good" : allYearsAvgPct !== null && allYearsAvgPct >= 50 ? "mid" : "low"}">${allYearsAvgPct !== null ? `${allYearsAvgPct}%` : "—"}</strong></div><div><span>${lang === "zh" ? "已評分項" : "Graded"}</span><strong>${gradedAllYearsAssessments.length}</strong></div><div><span>${lang === "zh" ? "涉及學年" : "Years"}</span><strong>${yearPerformance.length}</strong></div></div><p style="margin:7px 0 2px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "歷年評估趨勢" : "All-years assessment trend"}</p>${trendSvg}</div><div class="panel"><p style="margin:0 0 5px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "學年摘要" : "School-year summary"}</p><table><tbody>${yearRows || `<tr><td class="muted">${lang === "zh" ? "尚未有歷史資料。" : "No history yet."}</td></tr>`}</tbody></table><p style="margin:8px 0 3px;font-size:8px;font-weight:700;color:#64748b">${lang === "zh" ? "本學科各學年平均" : "Subject-by-year averages"}</p><div>${subjectRows || `<span class="muted">—</span>`}</div></div></div>${absenceImpactHtml}${assignmentImpactHtml}</section>${topicRadarUnits.length > 0 ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "跨學年課題表現雷達圖" : "All-years Topic Performance Radar"}</h2><p class="muted" style="margin:0 0 6px;font-size:8px">${lang === "zh" ? "只按目前科目、以評分證據最多的六個學習單元繪製；每一軸附有得分、百分比及覆蓋評估數量。" : "For the current subject only, built from the six learning units with the most scored evidence; each axis includes score, percentage, and assessment coverage."}</p>${topicRadarSvg}</section>` : ""}${allYearsTopicRows ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "課題強弱分析及教學建議（本學科跨學年）" : "Topic Strengths, Needs & Teaching Recommendations (Current Subject, All Years)"}</h2><p class="muted" style="margin:0 0 6px;font-size:8px">${lang === "zh" ? "依本學科逐題課題標記的得分自動生成；結果包含已覆蓋的評估及題目數。" : "Auto-generated from current-subject question-level topic tags; evidence includes the assessments and items covered."}</p><table class="topic-table"><thead><tr><th>${lang === "zh" ? "課題" : "Topic"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th><th class="center">${lang === "zh" ? "狀態" : "Status"}</th></tr></thead><tbody>${allYearsTopicRows}</tbody></table>${recommendationRows ? `<div class="recommendations">${recommendationRows}</div>` : ""}</section>` : ""}<section class="section"><h2 class="section-title">${lang === "zh" ? "評估總覽（本學科跨學年）" : "Assessment Overview (Current Subject, All Years)"}</h2><table><thead><tr><th>${lang === "zh" ? "評估" : "Assessment"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th><th class="center">${lang === "zh" ? "排名" : "Rank"}</th></tr></thead><tbody>${assessmentRows || `<tr><td colspan="4" class="muted">—</td></tr>`}</tbody></table></section>${detailSections ? `<section class="section question-analysis"><h2 class="section-title">${lang === "zh" ? "每項評估逐題分析" : "Per-assessment Question Analysis"}</h2>${detailSections}</section>` : ""}${currentTopicRows ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "目前科目學習單元分析" : "Current Subject Learning Unit Analysis"}</h2><table><thead><tr><th>${lang === "zh" ? "學習單元" : "Learning unit"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th></tr></thead><tbody>${currentTopicRows}</tbody></table></section>` : ""}<footer class="footer"><span>${escapeHtml(displayName)} · ${lang === "zh" ? `${subjectName} 跨學年報告` : `${subjectName} all-years report`}</span><span>${lang === "zh" ? "由 Maths Analytics 生成" : "Generated by Maths Analytics"}</span></footer></main><script>window.onload=()=>window.print();<\/script></body></html>`);
     win.document.close();
   };
 
@@ -3934,6 +4024,18 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
               <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div className="rounded-lg border border-orange-200 bg-white/80 p-2.5"><div className="flex items-center justify-between gap-2"><span className="text-xs font-bold text-blue-800">{lang === "zh" ? "小測（CA）" : "CA"}</span><span className="font-mono text-xs font-bold text-orange-700">{absentCAAssessments.length} ABS</span></div><p className="mt-1 text-[11px] leading-relaxed text-slate-600">{absentCAAssessments.length === 0 ? (lang === "zh" ? "沒有小測缺席紀錄。" : "No CA absences.") : caAbsImpact !== null ? (lang === "zh" ? `現有加權 ${caTotal ?? "—"}%；如只查看已完成紀錄為 ${caTotalWithoutAbs ?? "—"}%；ABS 令結果降低 ${caAbsImpact} 個百分點。` : `Weighted result: ${caTotal ?? "—"}%; completed-record view: ${caTotalWithoutAbs ?? "—"}%; ABS lowers the result by ${caAbsImpact} percentage point(s).`) : (lang === "zh" ? `現有加權 ${caTotal ?? "—"}%；暫無其他完整 CA 成績作比較。` : `Weighted result: ${caTotal ?? "—"}%; no other complete CA record is available for comparison.`)}</p></div>
                 <div className="rounded-lg border border-orange-200 bg-white/80 p-2.5"><div className="flex items-center justify-between gap-2"><span className="text-xs font-bold text-red-800">{lang === "zh" ? "大考（Exam）" : "Exam"}</span><span className="font-mono text-xs font-bold text-orange-700">{absentExamAssessments.length} ABS</span></div><p className="mt-1 text-[11px] leading-relaxed text-slate-600">{absentExamAssessments.length === 0 ? (lang === "zh" ? "沒有大考缺席紀錄。" : "No exam absences.") : examAbsImpact !== null ? (lang === "zh" ? `現有加權 ${examTotal ?? "—"}%；如只查看已完成紀錄為 ${examTotalWithoutAbs ?? "—"}%；ABS 令結果降低 ${examAbsImpact} 個百分點。` : `Weighted result: ${examTotal ?? "—"}%; completed-record view: ${examTotalWithoutAbs ?? "—"}%; ABS lowers the result by ${examAbsImpact} percentage point(s).`) : (lang === "zh" ? `現有加權 ${examTotal ?? "—"}%；暫無其他完整大考成績作比較。` : `Weighted result: ${examTotal ?? "—"}%; no other complete exam record is available for comparison.`)}</p></div>
+              </div>
+            </div>
+          )}
+
+          {(missingAssignments.length > 0 || lateAssignments.length > 0) && (
+            <div className="rounded-xl border border-violet-200 bg-violet-50/55 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="text-sm font-bold text-violet-900">{lang === "zh" ? "作業提交狀態對平時分的影響" : "Assignment submission status & CA impact"}</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-violet-800">{lang === "zh" ? "遲交以原分 × 70% 計入此學生的 CA；欠交直接以 0 分計入。兩者均不納入班級平均、排名、弱點或課題分析。" : "Late work counts as raw score × 70% in this student's CA; missing work counts as 0. Both are excluded from class averages, rank, weakness and topic analysis."}</p>
+                </div>
+                <div className="flex gap-1.5"><Badge className="bg-violet-100 text-violet-800 hover:bg-violet-100">{lang === "zh" ? `遲交 × ${lateAssignments.length}` : `Late × ${lateAssignments.length}`}</Badge><Badge className="bg-rose-100 text-rose-800 hover:bg-rose-100">{lang === "zh" ? `欠交 × ${missingAssignments.length}` : `Missing × ${missingAssignments.length}`}</Badge></div>
               </div>
             </div>
           )}
@@ -4076,7 +4178,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                           {caSubcategories.map(subcategory => <div key={subcategory.id} className="border-t border-blue-100 first:border-t-0"><div className="px-3 py-1 bg-blue-50/60 flex items-center gap-2"><span className="inline-flex rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">{subcategory.label}</span><span className="text-[10px] text-slate-400">{subcategory.assessments.length} {lang === "zh" ? "項 · Code 排序" : "items · code sorted"}</span></div><table className="w-full text-sm"><tbody>{subcategory.assessments.map(a => (
                             <tr key={a.id} className="border-b border-slate-50 last:border-0">
                               <td className="px-3 py-1.5"><div><span className="font-mono font-bold text-blue-700 text-xs">{a.code || "—"}</span><span className="text-slate-500 text-xs mx-1">·</span><span className="font-semibold text-slate-800 text-xs">{a.title}</span></div></td>
-                              <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.isAbsent ? "ABS" : a.total !== null ? `${a.total}/${a.max}` : a.entryState === "incomplete" ? (lang === "zh" ? "未完成" : "Pending") : "—"}</td>
+                              <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.isAbsent ? "ABS" : a.assignmentStatus === "missing" ? (lang === "zh" ? "欠交 (0)" : "Missing (0)") : a.total !== null ? `${a.total}/${a.max}${a.assignmentStatus === "late" ? (lang === "zh" ? " · 遲交 70%" : " · Late 70%") : ""}` : a.entryState === "incomplete" ? (lang === "zh" ? "未完成" : "Pending") : "—"}</td>
                               <td className="px-2 py-1.5 text-center">{a.pct !== null ? <span className={cn("font-mono font-bold text-xs", a.pct >= 70 ? "text-green-600" : a.pct >= 50 ? "text-amber-600" : "text-red-600")}>{a.pct}%</span> : <span className="text-slate-300 text-xs">—</span>}</td>
                               <td className="px-2 py-1.5 text-center font-mono text-slate-500 text-xs">{a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
                             </tr>
@@ -4094,7 +4196,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                               {examItems.map(a => (
                                 <tr key={a.id} className="border-b border-red-50/60 last:border-0 bg-red-50/10">
                                   <td className="px-3 py-1.5"><div><span className="font-semibold text-slate-800 text-xs">{a.title}</span>{a.code && <span className="text-slate-400 text-xs ml-1">({a.code})</span>}</div></td>
-                                  <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.isAbsent ? "ABS" : a.total !== null ? `${a.total}/${a.max}` : a.entryState === "incomplete" ? (lang === "zh" ? "未完成" : "Pending") : "—"}</td>
+                                  <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.isAbsent ? "ABS" : a.assignmentStatus === "missing" ? (lang === "zh" ? "欠交 (0)" : "Missing (0)") : a.total !== null ? `${a.total}/${a.max}${a.assignmentStatus === "late" ? (lang === "zh" ? " · 遲交 70%" : " · Late 70%") : ""}` : a.entryState === "incomplete" ? (lang === "zh" ? "未完成" : "Pending") : "—"}</td>
                                   <td className="px-2 py-1.5 text-center">{a.pct !== null ? <span className={cn("font-mono font-bold text-xs", a.pct >= 70 ? "text-green-600" : a.pct >= 50 ? "text-amber-600" : "text-red-600")}>{a.pct}%</span> : <span className="text-slate-300 text-xs">—</span>}</td>
                                   <td className="px-2 py-1.5 text-center font-mono text-slate-500 text-xs">{a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
                                 </tr>
@@ -5054,13 +5156,14 @@ function BackupTab() {
             rows.push(`=== ${esc(year.label)} | ${esc(subj?.name ?? ys.subjectId)} | ${esc(cls.name)} | ${esc(asmt.title)} ===`);
             // Column headers: Class No, Name, then each mark item label
             const markItems = asmt.markSheet.filter(m => !m.isSection);
-            rows.push(["Class No", "Name", ...markItems.map(m => esc(m.label)), "Total", "Absent"].join(","));
+            rows.push(["Class No", "Name", ...markItems.map(m => esc(m.label)), "Total", "Absent", "Assignment Submission Status"].join(","));
             // One row per student
             for (const student of cls.students) {
               const scoreEntry = asmt.scores.find(s => s.studentId === student.id);
               const isAbsent = scoreEntry?.isAbsent ?? false;
+              const assignmentStatus = scoreEntry?.assignmentStatus ?? "";
               if (isAbsent) {
-                rows.push([esc(student.classNo), esc(student.name), ...markItems.map(() => "ABS"), "ABS", "YES"].join(","));
+                rows.push([esc(student.classNo), esc(student.name), ...markItems.map(() => "ABS"), "ABS", "YES", ""].join(","));
               } else {
                 const itemScores = markItems.map(m => {
                   const val = scoreEntry?.scores?.[m.id];
@@ -5071,7 +5174,7 @@ function BackupTab() {
                   return sum + (typeof val === "number" ? val : 0);
                 }, 0);
                 const hasAnyScore = markItems.some(m => scoreEntry?.scores?.[m.id] !== null && scoreEntry?.scores?.[m.id] !== undefined);
-                rows.push([esc(student.classNo), esc(student.name), ...itemScores, hasAnyScore ? esc(total) : "", "NO"].join(","));
+                rows.push([esc(student.classNo), esc(student.name), ...itemScores, hasAnyScore ? esc(total) : assignmentStatus === "missing" ? "0" : "", "NO", esc(assignmentStatus)].join(","));
               }
             }
           }

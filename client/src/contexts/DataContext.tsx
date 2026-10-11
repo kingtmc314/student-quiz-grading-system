@@ -32,6 +32,7 @@ import {
   saveMarkSheet,
   upsertScoreDb, deleteScoreDb,
   upsertAbsentFlagDb, deleteAbsentFlagDb,
+  saveAssignmentSubmissionStatusDb, deleteAssignmentSubmissionStatusDb,
 } from "@/lib/supabase";
 
 // ─── Persistence helpers (localStorage fallback) ──────────────────────────────
@@ -157,8 +158,12 @@ export interface ScoreEntry {
   studentId: string;
   scores: Record<string, number | null>;
   isAbsent?: boolean;
+  /** Assignment-only: late marks are reduced to 70%; missing is a personal CA zero. */
+  assignmentStatus?: AssignmentSubmissionStatus;
   submittedAt?: string;
 }
+
+export type AssignmentSubmissionStatus = "late" | "missing";
 
 export type Term = "Term 1" | "Term 2" | "Full Year";
 
@@ -870,11 +875,17 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     }));
     // Handle absent flag separately
     if (entry.isAbsent) {
+      await deleteAssignmentSubmissionStatusDb(assessmentId, entry.studentId);
       await upsertAbsentFlagDb(assessmentId, entry.studentId);
       await deleteScoreDb(assessmentId, entry.studentId);
     } else {
       await deleteAbsentFlagDb(assessmentId, entry.studentId);
       await upsertScoreDb(assessmentId, entry);
+      if (entry.assignmentStatus) {
+        await saveAssignmentSubmissionStatusDb(assessmentId, entry.studentId, entry.assignmentStatus);
+      } else {
+        await deleteAssignmentSubmissionStatusDb(assessmentId, entry.studentId);
+      }
     }
   }, [mutateAssessment]);
 
@@ -886,6 +897,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       ...a,
       scores: a.scores.filter(s => s.studentId !== studentId),
     }));
+    deleteAssignmentSubmissionStatusDb(assessmentId, studentId).catch(console.error);
     deleteScoreDb(assessmentId, studentId).catch(console.error);
   }, [mutateAssessment]);
 

@@ -9,7 +9,7 @@ import { createClient } from '@supabase/supabase-js';
 import type {
   Teacher, AssessmentNature, Subject, Topic, WeightingScheme,
   SyllabusItem, SchoolYear, YearSubject, Class, Student,
-  Assessment, MarkItem, ScoreEntry
+  Assessment, MarkItem, ScoreEntry, AssignmentSubmissionStatus
 } from '@/contexts/DataContext';
 
 const SUPABASE_URL = 'https://mwhppdxrfekyazcliqcc.supabase.co';
@@ -132,6 +132,17 @@ export interface FullAppState {
   syllabusItems: SyllabusItem[];
 }
 
+const ASSIGNMENT_STATUS_STATE_KEY = 'assignmentSubmissionStatuses';
+type AssignmentStatusMap = Record<string, AssignmentSubmissionStatus>;
+
+function assignmentStatusKey(assessmentId: string, studentId: string) {
+  return `${assessmentId}::${studentId}`;
+}
+
+function isAssignmentStatus(value: unknown): value is AssignmentSubmissionStatus {
+  return value === 'late' || value === 'missing';
+}
+
 /**
  * Paginated fetch helper — Supabase default limit is 1000 rows.
  * This fetches ALL rows from a table by paginating in chunks.
@@ -168,7 +179,7 @@ export async function loadFullState(): Promise<FullAppState | null> {
       teachersRes, naturesRes, subjectsRes, topicsRes,
       wsRes, weRes, syllabusRes,
       yearsRes, ysRes, classesRes, studentsRes,
-      asmtsRes, atRes, msRes, scoresRes, absentRes,
+      asmtsRes, atRes, msRes, scoresRes, absentRes, appStateRes,
     ] = await Promise.all([
       supabase.from('sqgs_teachers').select('*').order('name'),
       supabase.from('sqgs_assessment_natures').select('*').order('name'),
@@ -186,6 +197,7 @@ export async function loadFullState(): Promise<FullAppState | null> {
       fetchAllRows<DbMarkSheetItem>('sqgs_mark_sheet_items', 'sort_order'),
       fetchAllRows<DbScore>('sqgs_scores'),
       supabase.from('sqgs_absent_flags').select('*'),
+      supabase.from('sqgs_app_state').select('data').eq('id', APP_STATE_ID).maybeSingle(),
     ]);
 
     // Check for errors
@@ -213,6 +225,8 @@ export async function loadFullState(): Promise<FullAppState | null> {
     const dbMS = (msRes.data ?? []) as DbMarkSheetItem[];
     const dbScores = (scoresRes.data ?? []) as DbScore[];
     const dbAbsent = (absentRes.data ?? []) as { assessment_id: string; student_id: string }[];
+    const appStatePayload = appStateRes.error ? {} : ((appStateRes.data?.data ?? {}) as Record<string, unknown>);
+    const assignmentStatusMap = (appStatePayload[ASSIGNMENT_STATUS_STATE_KEY] ?? {}) as AssignmentStatusMap;
 
     // Build teachers
     const teachers: Teacher[] = dbTeachers.map(dbToTeacher);
@@ -273,6 +287,19 @@ export async function loadFullState(): Promise<FullAppState | null> {
       }
       byStudent.get(ab.student_id)!.isAbsent = true;
     }
+    // Assignment submission statuses are deliberately kept separate from raw marks.
+    // A missing submission can therefore persist even when there are no score rows.
+    Object.entries(assignmentStatusMap).forEach(([key, status]) => {
+      if (!isAssignmentStatus(status)) return;
+      const [assessmentId, studentId] = key.split('::');
+      if (!assessmentId || !studentId) return;
+      if (!scoresMap.has(assessmentId)) scoresMap.set(assessmentId, new Map());
+      const byStudent = scoresMap.get(assessmentId)!;
+      if (!byStudent.has(studentId)) byStudent.set(studentId, { studentId, scores: {} });
+      const entry = byStudent.get(studentId)!;
+      // ABS remains the stronger state if historical data contains both flags.
+      if (!entry.isAbsent) entry.assignmentStatus = status;
+    });
 
     // Build assessment topics map: assessmentId → topicIds[]
     const atMap = new Map<string, string[]>();
@@ -748,6 +775,46 @@ export async function deleteAbsentFlagDb(assessmentId: string, studentId: string
   if (error) console.error('deleteAbsentFlag error:', error);
 }
 
+/**
+ * Stores assignment-only late/missing flags alongside the legacy app-state payload.
+ * Raw score rows remain untouched, so the status can never overwrite a score sheet.
+ */
+async function updateAssignmentSubmissionStatusDb(
+  assessmentId: string,
+  studentId: string,
+  status?: AssignmentSubmissionStatus,
+) {
+  const { data: current, error: readError } = await supabase
+    .from('sqgs_app_state')
+    .select('data')
+    .eq('id', APP_STATE_ID)
+    .maybeSingle();
+  if (readError) throw new Error(`Cannot read assignment status store: ${readError.message}`);
+
+  const payload = ((current?.data ?? {}) as Record<string, unknown>);
+  const statuses = { ...((payload[ASSIGNMENT_STATUS_STATE_KEY] ?? {}) as AssignmentStatusMap) };
+  const key = assignmentStatusKey(assessmentId, studentId);
+  if (status) statuses[key] = status;
+  else delete statuses[key];
+
+  const { error: writeError } = await supabase
+    .from('sqgs_app_state')
+    .upsert({ id: APP_STATE_ID, data: { ...payload, [ASSIGNMENT_STATUS_STATE_KEY]: statuses } }, { onConflict: 'id' });
+  if (writeError) throw new Error(`Cannot save assignment status: ${writeError.message}`);
+}
+
+export async function saveAssignmentSubmissionStatusDb(
+  assessmentId: string,
+  studentId: string,
+  status: AssignmentSubmissionStatus,
+) {
+  await updateAssignmentSubmissionStatusDb(assessmentId, studentId, status);
+}
+
+export async function deleteAssignmentSubmissionStatusDb(assessmentId: string, studentId: string) {
+  await updateAssignmentSubmissionStatusDb(assessmentId, studentId);
+}
+
 // ─── Full state save (used for initial seed / backup restore) ─────────────────
 
 export async function saveFullState(state: {
@@ -807,6 +874,7 @@ export async function saveFullState(state: {
           await saveMarkSheet(asmt.id, asmt.markSheet);
           for (const entry of asmt.scores) {
             await upsertScoreDb(asmt.id, entry);
+            if (entry.assignmentStatus) await saveAssignmentSubmissionStatusDb(asmt.id, entry.studentId, entry.assignmentStatus);
           }
         }
       }
