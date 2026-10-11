@@ -13,7 +13,7 @@ import {
   GraduationCap, Languages, Save, ChevronDown, ChevronRight, Plus, Trash2,
   BookOpen, Menu, X, Pencil, Check, Upload, FileEdit, Tag, Wand2, FileText,
   ArrowUp, ArrowDown, ChevronLeft, Printer, TrendingUp, TrendingDown, Minus,
-  Download, Copy, BarChart2, Tags, CalendarDays, ArrowRight, Cloud, ClipboardPaste, FileSpreadsheet,
+  Download, Copy, BarChart2, Tags, CalendarDays, ArrowRight, Cloud, ClipboardPaste, FileSpreadsheet, Filter,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useData } from "@/contexts/DataContext";
@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.23.0";
+const APP_VERSION = "v1.24.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -1233,6 +1233,7 @@ function GradingTab({
 
   const [assessmentId, setAssessmentId] = useState("");
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
+  const [studentListFilter, setStudentListFilter] = useState<"all" | "absent" | "missing">("all");
   const [draftScores, setDraftScores] = useState<Record<string, number | "">>({});
   const [isAbsent, setIsAbsent] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -1279,8 +1280,14 @@ function GradingTab({
   const topics = globalSubject?.topics ?? [];
 
   const sortedStudents = cls ? [...cls.students].sort((a, b) => a.classNo.localeCompare(b.classNo, undefined, { numeric: true })) : [];
+  const visibleStudents = assessment ? sortedStudents.filter(student => {
+    const state = getScoreEntryState(assessment, student.id);
+    if (studentListFilter === "absent") return state === "absent";
+    if (studentListFilter === "missing") return state === "not-entered" || state === "incomplete";
+    return true;
+  }) : sortedStudents;
   const selectedStudent = sortedStudents.find(s => s.id === selectedStudentId) ?? null;
-  const selectedIdx = sortedStudents.findIndex(s => s.id === selectedStudentId);
+  const selectedIdx = visibleStudents.findIndex(s => s.id === selectedStudentId);
 
   // Load scores when student or assessment changes
   useState(() => {
@@ -1340,6 +1347,11 @@ function GradingTab({
   const maxTotal = totalMaxMarks(markSheet);
   const completeStudentCount = assessment ? sortedStudents.filter(student => getScoreEntryState(assessment, student.id) === "complete").length : 0;
   const incompleteStudentCount = assessment ? sortedStudents.filter(student => getScoreEntryState(assessment, student.id) === "incomplete").length : 0;
+  const absentStudentCount = assessment ? sortedStudents.filter(student => getScoreEntryState(assessment, student.id) === "absent").length : 0;
+  const missingStudentCount = assessment ? sortedStudents.filter(student => {
+    const state = getScoreEntryState(assessment, student.id);
+    return state === "not-entered" || state === "incomplete";
+  }).length : 0;
 
   const currentTotal = questions.reduce((s, q) => {
     const v = draftScores[q.id];
@@ -1390,9 +1402,9 @@ function GradingTab({
 
   const navigateStudent = async (dir: -1 | 1) => {
     if (dirty) await handleSave();
-    if (!selectedStudentId) { setSelectedStudentId(sortedStudents[0]?.id ?? null); return; }
-    const idx = sortedStudents.findIndex(s => s.id === selectedStudentId);
-    const next = sortedStudents[idx + dir];
+    if (!selectedStudentId) { setSelectedStudentId(visibleStudents[0]?.id ?? null); return; }
+    const idx = visibleStudents.findIndex(s => s.id === selectedStudentId);
+    const next = visibleStudents[idx + dir];
     if (next) setSelectedStudentId(next.id);
   };
 
@@ -1560,14 +1572,25 @@ function GradingTab({
           {/* ── Left: Student list ── */}
           <div className="w-full md:w-64 md:shrink-0 border-b md:border-b-0 md:border-r border-slate-200 flex flex-col overflow-hidden bg-white max-h-[38vh] md:max-h-[clamp(200px,50vh,400px)]">
             <div className="px-3 py-2 border-b border-slate-200 bg-slate-50 hidden md:block">
-              <p className="text-xs font-bold uppercase tracking-widest text-slate-500">{t("students")} ({sortedStudents.length})</p>
+              <div className="flex items-center justify-between gap-2"><p className="text-xs font-bold uppercase tracking-widest text-slate-500">{t("students")} ({visibleStudents.length}/{sortedStudents.length})</p><Filter className="w-3.5 h-3.5 text-slate-400" /></div>
             </div>
             <div className="px-3 py-1.5 border-b border-slate-200 bg-slate-50 md:hidden flex items-center justify-between">
-              <p className="text-xs font-bold uppercase tracking-widest text-slate-500">{t("students")} ({sortedStudents.length})</p>
-              <p className="text-xs text-slate-400">{lang === "zh" ? "滞動選擇" : "Scroll to select"}</p>
+              <p className="text-xs font-bold uppercase tracking-widest text-slate-500">{t("students")} ({visibleStudents.length}/{sortedStudents.length})</p>
+              <p className="text-xs text-slate-400">{lang === "zh" ? "滾動選擇" : "Scroll to select"}</p>
+            </div>
+            <div className="px-2 py-2 border-b border-slate-200 bg-white flex flex-wrap gap-1">
+              {([
+                ["all", lang === "zh" ? "全部" : "All", sortedStudents.length, "text-slate-600"],
+                ["absent", "ABS", absentStudentCount, "text-orange-700"],
+                ["missing", lang === "zh" ? "欠交" : "Missing", missingStudentCount, "text-amber-700"],
+              ] as const).map(([filter, label, count, textClass]) => (
+                <button key={filter} onClick={() => setStudentListFilter(filter)} className={cn("rounded-full border px-2 py-1 text-[10px] font-bold transition-colors", studentListFilter === filter ? filter === "absent" ? "border-orange-300 bg-orange-100 text-orange-800" : filter === "missing" ? "border-amber-300 bg-amber-100 text-amber-800" : "border-blue-300 bg-blue-50 text-blue-700" : `border-slate-200 bg-white hover:bg-slate-50 ${textClass}`)}>
+                  {label} {count}
+                </button>
+              ))}
             </div>
             <div className="flex-1 overflow-y-auto">
-              {sortedStudents.map(student => {
+              {visibleStudents.length === 0 ? <div className="px-4 py-8 text-center text-xs text-slate-400">{lang === "zh" ? "沒有符合此篩選的學生。" : "No students match this filter."}</div> : visibleStudents.map(student => {
                 const total = getStudentTotal(student.id);
                 const studentEntry = assessment?.scores.find(s => s.studentId === student.id);
                 const studentIsAbsent = studentEntry?.isAbsent ?? false;
@@ -1609,8 +1632,8 @@ function GradingTab({
                       <span className="font-mono text-xs text-slate-400">{selectedStudent.classNo}</span>
                       <span className="font-bold text-slate-800 ml-2">{lang === "zh" && selectedStudent.nameCht ? selectedStudent.nameCht : selectedStudent.name}</span>
                     </div>
-                    <button onClick={() => navigateStudent(1)} disabled={selectedIdx >= sortedStudents.length - 1} className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-200 disabled:opacity-30"><ChevronRight className="w-4 h-4" /></button>
-                    <span className="text-xs text-slate-400">{selectedIdx + 1}/{sortedStudents.length}</span>
+                    <button onClick={() => navigateStudent(1)} disabled={selectedIdx >= visibleStudents.length - 1} className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-200 disabled:opacity-30"><ChevronRight className="w-4 h-4" /></button>
+                    <span className="text-xs text-slate-400">{selectedIdx + 1}/{visibleStudents.length}</span>
                   </div>
                   <div className="flex items-center gap-3">
                     {/* ABS Toggle */}
@@ -1709,8 +1732,8 @@ function GradingTab({
                 {/* Footer nav */}
                 <div className="px-4 py-2 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
                   <Button variant="outline" size="sm" onClick={() => navigateStudent(-1)} disabled={selectedIdx <= 0} className="gap-1 text-xs h-7"><ChevronLeft className="w-3.5 h-3.5" />{t("prev")}</Button>
-                  <span className="text-xs text-slate-400">{selectedIdx + 1}/{sortedStudents.length}</span>
-                  <Button variant="outline" size="sm" onClick={() => navigateStudent(1)} disabled={selectedIdx >= sortedStudents.length - 1} className="gap-1 text-xs h-7">{t("next")}<ChevronRight className="w-3.5 h-3.5" /></Button>
+                  <span className="text-xs text-slate-400">{selectedIdx + 1}/{visibleStudents.length}</span>
+                  <Button variant="outline" size="sm" onClick={() => navigateStudent(1)} disabled={selectedIdx >= visibleStudents.length - 1} className="gap-1 text-xs h-7">{t("next")}<ChevronRight className="w-3.5 h-3.5" /></Button>
                 </div>
               </>
             )}
@@ -2520,6 +2543,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const cls = yearId && subjectId && classId ? getClass(yearId, subjectId, classId) : undefined;
 
   const [summaryFilter, setSummaryFilter] = useState<"all" | "ca" | "exam">("all");
+  const [summaryStudentFilter, setSummaryStudentFilter] = useState<"all" | "absent" | "missing">("all");
   const [collapsedTerms, setCollapsedTerms] = useState<Set<string>>(new Set());
 
   const toggleTerm = (term: string) => {
@@ -2537,6 +2561,24 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const assessments = cls.assessments ?? [];
   const sortedStudents = [...cls.students].sort((a, b) => a.classNo.localeCompare(b.classNo, undefined, { numeric: true }));
   const scheme = getWeightingScheme(cls.form, subjectId, cls.weightingSchemeId);
+  const statusAssessments = assessments.filter(assessment => {
+    const nature = getNature(assessment.natureId ?? "");
+    const isExam = nature?.isExam ?? false;
+    const isStarted = assessment.scores.length > 0;
+    return isStarted && (summaryFilter === "all" || (summaryFilter === "ca" ? !isExam : isExam));
+  });
+  const getStudentStatusCounts = (studentId: string) => statusAssessments.reduce((counts, assessment) => {
+    const state = getScoreEntryState(assessment, studentId);
+    if (state === "absent") counts.absent += 1;
+    if (state === "not-entered" || state === "incomplete") counts.missing += 1;
+    return counts;
+  }, { absent: 0, missing: 0 });
+  const visibleSummaryStudents = sortedStudents.filter(student => {
+    const status = getStudentStatusCounts(student.id);
+    return summaryStudentFilter === "all" || (summaryStudentFilter === "absent" ? status.absent > 0 : status.missing > 0);
+  });
+  const totalAbsentRecords = sortedStudents.reduce((sum, student) => sum + getStudentStatusCounts(student.id).absent, 0);
+  const totalMissingStudents = sortedStudents.filter(student => getStudentStatusCounts(student.id).missing > 0).length;
 
   // Build enriched assessment list
   const allAssessData = assessments.map(a => {
@@ -2581,11 +2623,11 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const handleExportCSV = () => {
     const flatAssess = termGroups.flatMap(displayedTermAssessments);
     const rows: string[][] = [];
-    rows.push(["#", lang === "zh" ? "姓名" : "Name", ...flatAssess.map(a => `${a.isExam ? (lang === "zh" ? "大考" : "Exam") : a.nature} · ${a.code || a.title} (/${a.max})`), lang === "zh" ? "CA總分" : "CA Total (%)", lang === "zh" ? "大考總分" : "Exam Total (%)"]);
-    sortedStudents.forEach(s => {
+    rows.push(["#", lang === "zh" ? "姓名" : "Name", lang === "zh" ? "ABS 次數" : "ABS Count", ...flatAssess.map(a => `${a.isExam ? (lang === "zh" ? "大考" : "Exam") : a.nature} · ${a.code || a.title} (/${a.max})`), lang === "zh" ? "CA總分" : "CA Total (%)", lang === "zh" ? "大考總分" : "Exam Total (%)"]);
+    visibleSummaryStudents.forEach(s => {
       const caT = calcCATotal(s.id, assessments, getNature, scheme);
       const examT = calcExamTotal(s.id, assessments, getNature, scheme);
-      rows.push([s.classNo, lang === "zh" && s.nameCht ? s.nameCht : s.name, ...flatAssess.map(a => {
+      rows.push([s.classNo, lang === "zh" && s.nameCht ? s.nameCht : s.name, String(getStudentStatusCounts(s.id).absent), ...flatAssess.map(a => {
         const total = getStudentAssessmentTotal(s.id, a.id);
         return total !== null ? String(total) : "";
       }), caT !== null ? `${caT}%` : "", examT !== null ? `${examT}%` : ""]);
@@ -2605,8 +2647,8 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     const XLSX = await import("xlsx");
     const flatAssess = termGroups.flatMap(displayedTermAssessments);
     // Build header rows matching the term / subcategory / assessment hierarchy.
-    const headerRow1: (string | null)[] = ["#", lang === "zh" ? "姓名" : "Name"];
-    const headerRow2: (string | null)[] = ["", ""];
+    const headerRow1: (string | null)[] = ["#", lang === "zh" ? "姓名" : "Name", lang === "zh" ? "ABS 次數" : "ABS Count"];
+    const headerRow2: (string | null)[] = ["", "", ""];
     termGroups.forEach(g => {
       const cols = g.caAssess.length + g.examAssess.length;
       headerRow1.push(termLabel(g.term, lang));
@@ -2623,14 +2665,15 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     headerRow1.push(lang === "zh" ? "CA總分" : "CA Total", lang === "zh" ? "大考總分" : "Exam Total");
     headerRow2.push("%", "%");
     // Assessment sub-header row
-    const assessRow: string[] = ["#", lang === "zh" ? "姓名" : "Name", ...flatAssess.map(a => a.code ? `${a.code} (/${a.max})` : `${a.title} (/${a.max})`), "", ""];
+    const assessRow: string[] = ["#", lang === "zh" ? "姓名" : "Name", lang === "zh" ? "缺席紀錄" : "Absence records", ...flatAssess.map(a => a.code ? `${a.code} (/${a.max})` : `${a.title} (/${a.max})`), "", ""];
     // Data rows
-    const dataRows = sortedStudents.map(s => {
+    const dataRows = visibleSummaryStudents.map(s => {
       const caT = calcCATotal(s.id, assessments, getNature, scheme);
       const examT = calcExamTotal(s.id, assessments, getNature, scheme);
       return [
         s.classNo,
         lang === "zh" && s.nameCht ? s.nameCht : s.name,
+        getStudentStatusCounts(s.id).absent,
         ...flatAssess.map(a => {
           const total = getStudentAssessmentTotal(s.id, a.id);
           return total !== null ? total : "";
@@ -2642,7 +2685,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     const ws = XLSX.utils.aoa_to_sheet([headerRow1, headerRow2, assessRow, ...dataRows]);
     // Merge term and CA-subcategory header cells.
     const merges: { s: { r: number; c: number }; e: { r: number; c: number } }[] = [];
-    let col = 2;
+    let col = 3;
     termGroups.forEach(g => {
       const span = g.caAssess.length + g.examAssess.length;
       if (span > 1) {
@@ -2657,7 +2700,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     });
     ws["!merges"] = merges;
     // Set column widths
-    ws["!cols"] = [{ wch: 5 }, { wch: 20 }, ...flatAssess.map(() => ({ wch: 12 })), { wch: 12 }, { wch: 12 }];
+    ws["!cols"] = [{ wch: 5 }, { wch: 20 }, { wch: 10 }, ...flatAssess.map(() => ({ wch: 12 })), { wch: 12 }, { wch: 12 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, cls.name.slice(0, 31));
     XLSX.writeFile(wb, `${cls.name}_summary.xlsx`);
@@ -2689,18 +2732,19 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
   const handlePrint = () => {
     const flatAssess = termGroups.flatMap(g => collapsedTerms.has(g.term) ? [] : displayedTermAssessments(g));
-    const rows = sortedStudents.map(s => {
+    const rows = visibleSummaryStudents.map(s => {
       const caT = calcCATotal(s.id, assessments, getNature, scheme);
       const examT = calcExamTotal(s.id, assessments, getNature, scheme);
       return [
         s.classNo,
         lang === "zh" && s.nameCht ? s.nameCht : s.name,
+        String(getStudentStatusCounts(s.id).absent),
         ...flatAssess.map(a => { const t = getStudentAssessmentTotal(s.id, a.id); return t !== null ? `${t}/${a.max}` : "—"; }),
         caT !== null ? `${caT}%` : "—",
         examT !== null ? `${examT}%` : "—",
       ];
     });
-    const headers = ["#", lang === "zh" ? "姓名" : "Name", ...flatAssess.map(a => `${a.isExam ? (lang === "zh" ? "大考" : "Exam") : a.nature} · ${a.code || a.title}`), lang === "zh" ? "CA總分" : "CA Total", lang === "zh" ? "大考總分" : "Exam Total"];
+    const headers = ["#", lang === "zh" ? "姓名" : "Name", lang === "zh" ? "ABS 次數" : "ABS Count", ...flatAssess.map(a => `${a.isExam ? (lang === "zh" ? "大考" : "Exam") : a.nature} · ${a.code || a.title}`), lang === "zh" ? "CA總分" : "CA Total", lang === "zh" ? "大考總分" : "Exam Total"];
     const tableHtml = `<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-size:11px;width:100%">
       <thead><tr style="background:#f1f5f9">${headers.map(h => `<th>${h}</th>`).join("")}</tr></thead>
       <tbody>${rows.map((r,i) => `<tr style="background:${i%2===0?"#fff":"#f8fafc"}">${r.map(c => `<td style="text-align:center">${c}</td>`).join("")}</tr>`).join("")}</tbody>
@@ -2913,6 +2957,20 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2">
+        <span className="inline-flex items-center gap-1 text-xs font-bold text-slate-600"><Filter className="h-3.5 w-3.5" />{lang === "zh" ? "學生狀態篩選" : "Student status"}</span>
+        {([
+          ["all", lang === "zh" ? "全部" : "All", sortedStudents.length, "border-blue-300 bg-blue-50 text-blue-700"],
+          ["absent", "ABS", totalAbsentRecords, "border-orange-300 bg-orange-50 text-orange-700"],
+          ["missing", lang === "zh" ? "欠交" : "Missing", totalMissingStudents, "border-amber-300 bg-amber-50 text-amber-700"],
+        ] as const).map(([filter, label, count, activeClass]) => (
+          <button key={filter} onClick={() => setSummaryStudentFilter(filter)} className={cn("rounded-full border px-2.5 py-1 text-xs font-bold transition-colors", summaryStudentFilter === filter ? activeClass : "border-slate-200 bg-white text-slate-600 hover:bg-slate-100")}>
+            {label} {count}
+          </button>
+        ))}
+        <span className="ml-auto text-[10px] text-slate-400">{lang === "zh" ? "欠交＝已開始輸入的評估中，未輸入或部分題目未完成；篩選只改變顯示及一般匯出。" : "Missing = not entered or incomplete in started assessments; filters only change display and standard exports."}</span>
+      </div>
+
       {assessments.length === 0 ? (
         <div className="bg-white rounded-xl border border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">{t("noAssessmentsYet")}</div>
       ) : (
@@ -2923,6 +2981,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
               <tr className="border-b border-slate-200 bg-slate-100">
                 <th className="px-3 py-1.5 text-left sticky left-0 bg-slate-100 w-10" rowSpan={3}>#</th>
                 <th className="px-3 py-1.5 text-left sticky left-10 bg-slate-100 min-w-[120px]" rowSpan={3}>{t("studentName")}</th>
+                <th className="px-2 py-1.5 text-center bg-orange-50 sticky left-[calc(2.5rem+120px)] min-w-[70px]" rowSpan={3}><div className="font-bold text-orange-700">ABS</div><div className="text-orange-400 font-normal text-[9px]">{lang === "zh" ? "次數" : "count"}</div></th>
                 {termGroups.map(g => {
                   const span = g.caAssess.length + g.examAssess.length;
                   return (
@@ -2967,13 +3026,17 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
             </thead>
             <tbody>
               {totalVisibleCols === 0 ? (
-                <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-400 text-sm">{lang === "zh" ? "此築選無評估" : "No assessments for this filter"}</td></tr>
-              ) : sortedStudents.map((student, idx) => {
+                <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-400 text-sm">{lang === "zh" ? "此篩選無評估" : "No assessments for this filter"}</td></tr>
+              ) : visibleSummaryStudents.length === 0 ? (
+                <tr><td colSpan={totalVisibleCols + 5} className="px-4 py-8 text-center text-slate-400 text-sm">{lang === "zh" ? "沒有符合此狀態篩選的學生。" : "No students match this status filter."}</td></tr>
+              ) : visibleSummaryStudents.map((student, idx) => {
                 const displayName = lang === "zh" && student.nameCht ? student.nameCht : student.name;
+                const status = getStudentStatusCounts(student.id);
                 return (
                   <tr key={student.id} className={cn("border-b border-slate-100 last:border-0", idx % 2 === 0 ? "bg-white" : "bg-slate-50/40")}>
                     <td className="px-3 py-2 font-mono text-slate-400 sticky left-0 bg-inherit">{student.classNo}</td>
                     <td className="px-3 py-2 font-semibold text-slate-800 sticky left-10 bg-inherit">{displayName}</td>
+                    <td className="px-2 py-2 text-center bg-orange-50/50"><span className={cn("font-mono font-bold", status.absent > 0 ? "text-orange-700" : "text-slate-300")}>{status.absent || "—"}</span></td>
                     {termGroups.map(g => (
                       <React.Fragment key={g.term}>
                         {displayedTermAssessments(g).map((a, i) => {
@@ -3027,6 +3090,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                     <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wide">{lang === "zh" ? "班級統計" : "Class Stats"}</div>
                     <div className="text-[9px] text-slate-400">ø avg ▲ high ▼ low</div>
                   </td>
+                  <td className="px-2 py-1.5 text-center bg-orange-50/60"><div className="text-[10px] font-bold text-orange-700">{totalAbsentRecords}</div><div className="text-[9px] text-orange-500">ABS</div></td>
                   {colStats.map((stat, i) => (
                     <td key={i} className="px-2 py-1.5 text-center border-l border-slate-200">
                       {stat.avg !== null ? (
@@ -3436,6 +3500,13 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const scheme = cls ? getWeightingScheme(cls.form, subjectId, cls.weightingSchemeId) : undefined;
   const caTotal = student ? calcCATotal(student.id, assessments, getNature, scheme) : null;
   const examTotal = student ? calcExamTotal(student.id, assessments, getNature, scheme) : null;
+  const absentAssessments = assessmentHistory.filter(item => item.isAbsent);
+  const absentCAAssessments = absentAssessments.filter(item => !item.isExam);
+  const absentExamAssessments = absentAssessments.filter(item => item.isExam);
+  const caTotalWithoutAbs = student ? calcCATotal(student.id, assessments, getNature, scheme, false) : null;
+  const examTotalWithoutAbs = student ? calcExamTotal(student.id, assessments, getNature, scheme, false) : null;
+  const caAbsImpact = caTotal !== null && caTotalWithoutAbs !== null ? Math.max(0, Math.round((caTotalWithoutAbs - caTotal) * 10) / 10) : null;
+  const examAbsImpact = examTotal !== null && examTotalWithoutAbs !== null ? Math.max(0, Math.round((examTotalWithoutAbs - examTotal) * 10) / 10) : null;
 
   // Read-only student history for the currently selected subject across school years.
   // A student may receive a new ID after class/year movement, so match exact
@@ -3719,8 +3790,9 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     })();
     const yearRows = yearPerformance.map(item => `<tr><td><strong>${escapeHtml(item.yearLabel)}</strong><span class="subline">${escapeHtml(item.subjects)} · ${item.assessments} ${lang === "zh" ? "項評估" : "assessments"}</span></td><td class="right score-${item.pct >= 70 ? "good" : item.pct >= 50 ? "mid" : "low"}">${item.pct}%</td></tr>`).join("");
     const subjectRows = subjectPerformance.map(item => `<span class="subject-chip"><strong>${escapeHtml(item.label)}</strong> ${item.pct}% <small>(${item.assessments})</small></span>`).join("");
+    const absenceImpactHtml = absentAssessments.length > 0 ? `<div style="margin-top:10px;border:1px solid #fdba74;border-radius:7px;padding:8px;background:#fff7ed"><strong style="display:block;color:#9a3412;font-size:10px">${lang === "zh" ? "ABS 對個人成績及加權的影響" : "ABS impact on personal results & weighting"}</strong><p style="margin:3px 0 0;font-size:8px;line-height:1.45;color:#9a3412">${lang === "zh" ? `此學生有 ${absentAssessments.length} 項 ABS；每項以 0 分計入此學生的個人成績及加權總分，但不納入班級平均、排名、弱點或課題分析。` : `This student has ${absentAssessments.length} ABS record(s). Each counts as 0 in the student's own results and weighting, but is excluded from class averages, rank, weakness and topic analysis.`}</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px"><div style="border:1px solid #fed7aa;border-radius:5px;padding:5px;background:#fff"><strong style="font-size:8px;color:#1e3a8a">${lang === "zh" ? "小測（CA）" : "CA"} · ${absentCAAssessments.length} ABS</strong><p style="margin:2px 0 0;font-size:8px;color:#475569">${escapeHtml(absentCAAssessments.length === 0 ? (lang === "zh" ? "沒有 CA 缺席紀錄。" : "No CA absences.") : caAbsImpact !== null ? (lang === "zh" ? `現有加權 ${caTotal ?? "—"}%；只計完整紀錄 ${caTotalWithoutAbs ?? "—"}%；相差 ${caAbsImpact} 個百分點。` : `Weighted ${caTotal ?? "—"}%; completed-only ${caTotalWithoutAbs ?? "—"}%; impact ${caAbsImpact} point(s).`) : (lang === "zh" ? `現有加權 ${caTotal ?? "—"}%；未有其他完整 CA 成績可比較。` : `Weighted ${caTotal ?? "—"}%; no other complete CA result for comparison.`))}</p></div><div style="border:1px solid #fed7aa;border-radius:5px;padding:5px;background:#fff"><strong style="font-size:8px;color:#991b1b">${lang === "zh" ? "大考（Exam）" : "Exam"} · ${absentExamAssessments.length} ABS</strong><p style="margin:2px 0 0;font-size:8px;color:#475569">${escapeHtml(absentExamAssessments.length === 0 ? (lang === "zh" ? "沒有大考缺席紀錄。" : "No exam absences.") : examAbsImpact !== null ? (lang === "zh" ? `現有加權 ${examTotal ?? "—"}%；只計完整紀錄 ${examTotalWithoutAbs ?? "—"}%；相差 ${examAbsImpact} 個百分點。` : `Weighted ${examTotal ?? "—"}%; completed-only ${examTotalWithoutAbs ?? "—"}%; impact ${examAbsImpact} point(s).`) : (lang === "zh" ? `現有加權 ${examTotal ?? "—"}%；未有其他完整大考成績可比較。` : `Weighted ${examTotal ?? "—"}%; no other complete exam result for comparison.`))}</p></div></div></div>` : "";
     let assessmentRowIndex = 0;
-    const renderAssessmentSummaryRow = (item: typeof allYearsAssessments[number]) => `<tr class="${assessmentRowIndex++ % 2 ? "striped" : ""}"><td><strong>${escapeHtml(item.code || item.title)}</strong>${item.code ? ` <span class="muted">· ${escapeHtml(item.title)}</span>` : ""}<span class="subline">${escapeHtml(item.subjectName)} (${escapeHtml(item.subjectCode)}) · ${escapeHtml(item.className)}${item.date ? ` · ${escapeHtml(item.date)}` : ""}</span></td><td class="center">${item.isAbsent ? "ABS" : item.total !== null ? `${item.total}/${item.max}` : "—"}</td><td class="center score-${item.pct !== null && item.pct >= 70 ? "good" : item.pct !== null && item.pct >= 50 ? "mid" : "low"}">${item.pct !== null ? `${item.pct}%` : "—"}</td><td class="center">${item.rank !== null ? `${item.rank}/${item.classSize}` : "—"}</td></tr>`;
+    const renderAssessmentSummaryRow = (item: typeof allYearsAssessments[number]) => `<tr class="${assessmentRowIndex++ % 2 ? "striped" : ""}"><td><strong>${escapeHtml(item.code || item.title)}</strong>${item.code ? ` <span class="muted">· ${escapeHtml(item.title)}</span>` : ""}<span class="subline">${escapeHtml(item.subjectName)} (${escapeHtml(item.subjectCode)}) · ${escapeHtml(item.className)}${item.date ? ` · ${escapeHtml(item.date)}` : ""}</span></td><td class="center">${item.isAbsent ? "ABS (0)" : item.total !== null ? `${item.total}/${item.max}` : "—"}</td><td class="center score-${item.pct !== null && item.pct >= 70 ? "good" : item.pct !== null && item.pct >= 50 ? "mid" : "low"}">${item.pct !== null ? `${item.pct}%` : "—"}</td><td class="center">${item.rank !== null ? `${item.rank}/${item.classSize}` : "—"}</td></tr>`;
     const assessmentRows = Array.from(new Map(allYearsAssessments.map(item => [item.yearLabel, allYearsAssessments.filter(candidate => candidate.yearLabel === item.yearLabel)])).entries()).flatMap(([yearLabel, yearItems]) => {
       const groupedRows = [`<tr><td colspan="4" style="padding:5px 6px;background:#e2e8f0;font-weight:800;color:#334155">${escapeHtml(yearLabel)}</td></tr>`];
       ORDERED_TERMS.forEach(term => {
@@ -3788,7 +3860,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     if (!win) { toast.error(lang === "zh" ? "無法開啟報告視窗，請允許彈出視窗。" : "Unable to open the report window. Please allow popups."); return; }
     win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(displayName)} — ${lang === "zh" ? "學生同科跨學年成績報告" : "Student Subject Performance Report"}</title><style>
       *{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff;color:#1e293b;font-family:Arial,'Microsoft JhengHei','PingFang TC',sans-serif;font-size:11px;line-height:1.45}.document{width:210mm;min-height:297mm;margin:0 auto;padding:14mm 13mm 16mm;background:#fff}.header{border-bottom:3px solid #1d4ed8;padding-bottom:10px;margin-bottom:12px;display:flex;justify-content:space-between;gap:12px}.header h1{font-size:21px;color:#1d4ed8;margin:0 0 2px}.header p{margin:0;color:#64748b;font-size:9px}.align-right{text-align:right}.section{margin-top:14px;break-inside:avoid}.section-title{font-size:13px;font-weight:800;margin:0 0 7px;border-left:4px solid #2563eb;padding-left:8px}.question-analysis{break-inside:auto;page-break-inside:auto}.question-analysis>.section-title{break-after:avoid-page;page-break-after:avoid}.question-analysis>.section-title+.detail-section{break-before:avoid-page;page-break-before:avoid}.snapshot{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:10px}.panel{border:1px solid #dbeafe;border-radius:7px;padding:8px;background:#fbfdff}.summary-stats,.detail-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.summary-stats>div,.detail-stats>div{border:1px solid #e2e8f0;border-radius:5px;padding:5px;text-align:center;background:#fff}.summary-stats span,.detail-stats span{display:block;font-size:8px;color:#64748b}.summary-stats strong{display:block;margin-top:1px;color:#1d4ed8;font-size:15px;font-family:monospace}.trend-chart{width:100%;height:145px;display:block}.subject-chip{display:inline-block;margin:2px;padding:2px 5px;background:#eff6ff;border-radius:4px;color:#334155;font-size:8px}.subject-chip small,.subline{color:#64748b}.subline{display:block;font-size:8px;font-weight:400;margin-top:1px}table{width:100%;border-collapse:collapse;font-size:9px}th{background:#1d4ed8;color:#fff;padding:5px 6px;text-align:left}td{padding:4px 6px;border-bottom:1px solid #e2e8f0}.striped td{background:#f8fafc}.center{text-align:center;font-family:monospace}.right{text-align:right;font-family:monospace}.muted{color:#94a3b8}.score-good{color:#16a34a!important}.score-mid{color:#d97706!important}.score-low{color:#dc2626!important}.detail-section{margin-top:12px;border:1px solid #bfdbfe;border-radius:7px;overflow:hidden;break-inside:avoid}.detail-header{display:flex;justify-content:space-between;gap:12px;padding:7px 9px;background:#eff6ff;border-bottom:1px solid #bfdbfe}.detail-header h3{margin:0;font-size:11px;color:#1e3a8a}.detail-header p{margin:2px 0 0;color:#475569;font-size:8px}.assessment-result{text-align:right}.assessment-result strong{display:block;font-size:13px;font-family:monospace}.assessment-result span{font-size:8px;color:#64748b}.detail-stats{padding:7px 9px;border-bottom:1px solid #e2e8f0}.detail-stats strong{display:block;font-size:10px;font-family:monospace;margin-top:1px}.topic-table{margin-top:4px}.recommendations{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:7px}.recommendation{border:1px solid #e2e8f0;border-radius:5px;padding:6px;background:#fff;font-size:8px}.recommendation strong{display:block;font-size:9px}.recommendation p{margin:3px 0;color:#475569;line-height:1.45}.recommendation small{color:#64748b}.recommendation-priority{border-color:#fecaca;background:#fef2f2}.recommendation-priority strong{color:#b91c1c}.recommendation-developing{border-color:#fde68a;background:#fffbeb}.recommendation-developing strong{color:#b45309}.recommendation-strong{border-color:#bbf7d0;background:#f0fdf4}.recommendation-strong strong{color:#15803d}.radar-layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(180px,.85fr);gap:9px;align-items:center;border:1px solid #dbeafe;border-radius:7px;padding:7px;background:#fbfdff}.topic-radar{display:block;width:100%;height:195px}.radar-legend{display:grid;gap:4px}.radar-legend-item{display:flex;gap:5px;align-items:flex-start;font-size:8px;line-height:1.2}.radar-legend-item strong{display:block;color:#334155}.radar-legend-item small{display:block;color:#64748b;margin-top:1px}.radar-dot{display:inline-flex;align-items:center;justify-content:center;flex:0 0 13px;height:13px;border-radius:50%;background:#2563eb;color:#fff;font-size:7px;font-weight:700}.footer{margin-top:16px;padding-top:7px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;color:#94a3b8;font-size:8px}@media print{@page{size:A4;margin:0}body{print-color-adjust:exact;-webkit-print-color-adjust:exact}.document{padding:14mm 13mm 16mm}.detail-section{break-inside:avoid}}
-    </style></head><body><main class="document"><header class="header"><div><h1>${lang === "zh" ? "學生同科跨學年成績報告" : "Student Subject Performance Report"}</h1><p>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(today)}</p></div><div class="align-right"><strong>${escapeHtml(displayName)}</strong><p>${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(student.classNo)} · ${escapeHtml(cls.name)} · ${escapeHtml(subjectName)} · ${escapeHtml(year.label)}</p></div></header><section class="section"><h2 class="section-title">${lang === "zh" ? `${subjectName} 表現（跨學年）` : `${subjectName} Performance (All Years)`}</h2><div class="snapshot"><div class="panel"><div class="summary-stats"><div><span>${lang === "zh" ? "歷年平均" : "All-years avg"}</span><strong class="score-${allYearsAvgPct !== null && allYearsAvgPct >= 70 ? "good" : allYearsAvgPct !== null && allYearsAvgPct >= 50 ? "mid" : "low"}">${allYearsAvgPct !== null ? `${allYearsAvgPct}%` : "—"}</strong></div><div><span>${lang === "zh" ? "已評分項" : "Graded"}</span><strong>${gradedAllYearsAssessments.length}</strong></div><div><span>${lang === "zh" ? "涉及學年" : "Years"}</span><strong>${yearPerformance.length}</strong></div></div><p style="margin:7px 0 2px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "歷年評估趨勢" : "All-years assessment trend"}</p>${trendSvg}</div><div class="panel"><p style="margin:0 0 5px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "學年摘要" : "School-year summary"}</p><table><tbody>${yearRows || `<tr><td class="muted">${lang === "zh" ? "尚未有歷史資料。" : "No history yet."}</td></tr>`}</tbody></table><p style="margin:8px 0 3px;font-size:8px;font-weight:700;color:#64748b">${lang === "zh" ? "本學科各學年平均" : "Subject-by-year averages"}</p><div>${subjectRows || `<span class="muted">—</span>`}</div></div></div></section>${topicRadarUnits.length > 0 ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "跨學年課題表現雷達圖" : "All-years Topic Performance Radar"}</h2><p class="muted" style="margin:0 0 6px;font-size:8px">${lang === "zh" ? "只按目前科目、以評分證據最多的六個學習單元繪製；每一軸附有得分、百分比及覆蓋評估數量。" : "For the current subject only, built from the six learning units with the most scored evidence; each axis includes score, percentage, and assessment coverage."}</p>${topicRadarSvg}</section>` : ""}${allYearsTopicRows ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "課題強弱分析及教學建議（本學科跨學年）" : "Topic Strengths, Needs & Teaching Recommendations (Current Subject, All Years)"}</h2><p class="muted" style="margin:0 0 6px;font-size:8px">${lang === "zh" ? "依本學科逐題課題標記的得分自動生成；結果包含已覆蓋的評估及題目數。" : "Auto-generated from current-subject question-level topic tags; evidence includes the assessments and items covered."}</p><table class="topic-table"><thead><tr><th>${lang === "zh" ? "課題" : "Topic"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th><th class="center">${lang === "zh" ? "狀態" : "Status"}</th></tr></thead><tbody>${allYearsTopicRows}</tbody></table>${recommendationRows ? `<div class="recommendations">${recommendationRows}</div>` : ""}</section>` : ""}<section class="section"><h2 class="section-title">${lang === "zh" ? "評估總覽（本學科跨學年）" : "Assessment Overview (Current Subject, All Years)"}</h2><table><thead><tr><th>${lang === "zh" ? "評估" : "Assessment"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th><th class="center">${lang === "zh" ? "排名" : "Rank"}</th></tr></thead><tbody>${assessmentRows || `<tr><td colspan="4" class="muted">—</td></tr>`}</tbody></table></section>${detailSections ? `<section class="section question-analysis"><h2 class="section-title">${lang === "zh" ? "每項評估逐題分析" : "Per-assessment Question Analysis"}</h2>${detailSections}</section>` : ""}${currentTopicRows ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "目前科目學習單元分析" : "Current Subject Learning Unit Analysis"}</h2><table><thead><tr><th>${lang === "zh" ? "學習單元" : "Learning unit"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th></tr></thead><tbody>${currentTopicRows}</tbody></table></section>` : ""}<footer class="footer"><span>${escapeHtml(displayName)} · ${lang === "zh" ? `${subjectName} 跨學年報告` : `${subjectName} all-years report`}</span><span>${lang === "zh" ? "由 Maths Analytics 生成" : "Generated by Maths Analytics"}</span></footer></main><script>window.onload=()=>window.print();<\/script></body></html>`);
+    </style></head><body><main class="document"><header class="header"><div><h1>${lang === "zh" ? "學生同科跨學年成績報告" : "Student Subject Performance Report"}</h1><p>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(today)}</p></div><div class="align-right"><strong>${escapeHtml(displayName)}</strong><p>${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(student.classNo)} · ${escapeHtml(cls.name)} · ${escapeHtml(subjectName)} · ${escapeHtml(year.label)}</p></div></header><section class="section"><h2 class="section-title">${lang === "zh" ? `${subjectName} 表現（跨學年）` : `${subjectName} Performance (All Years)`}</h2><div class="snapshot"><div class="panel"><div class="summary-stats"><div><span>${lang === "zh" ? "歷年平均" : "All-years avg"}</span><strong class="score-${allYearsAvgPct !== null && allYearsAvgPct >= 70 ? "good" : allYearsAvgPct !== null && allYearsAvgPct >= 50 ? "mid" : "low"}">${allYearsAvgPct !== null ? `${allYearsAvgPct}%` : "—"}</strong></div><div><span>${lang === "zh" ? "已評分項" : "Graded"}</span><strong>${gradedAllYearsAssessments.length}</strong></div><div><span>${lang === "zh" ? "涉及學年" : "Years"}</span><strong>${yearPerformance.length}</strong></div></div><p style="margin:7px 0 2px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "歷年評估趨勢" : "All-years assessment trend"}</p>${trendSvg}</div><div class="panel"><p style="margin:0 0 5px;font-size:9px;font-weight:700;color:#475569">${lang === "zh" ? "學年摘要" : "School-year summary"}</p><table><tbody>${yearRows || `<tr><td class="muted">${lang === "zh" ? "尚未有歷史資料。" : "No history yet."}</td></tr>`}</tbody></table><p style="margin:8px 0 3px;font-size:8px;font-weight:700;color:#64748b">${lang === "zh" ? "本學科各學年平均" : "Subject-by-year averages"}</p><div>${subjectRows || `<span class="muted">—</span>`}</div></div></div>${absenceImpactHtml}</section>${topicRadarUnits.length > 0 ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "跨學年課題表現雷達圖" : "All-years Topic Performance Radar"}</h2><p class="muted" style="margin:0 0 6px;font-size:8px">${lang === "zh" ? "只按目前科目、以評分證據最多的六個學習單元繪製；每一軸附有得分、百分比及覆蓋評估數量。" : "For the current subject only, built from the six learning units with the most scored evidence; each axis includes score, percentage, and assessment coverage."}</p>${topicRadarSvg}</section>` : ""}${allYearsTopicRows ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "課題強弱分析及教學建議（本學科跨學年）" : "Topic Strengths, Needs & Teaching Recommendations (Current Subject, All Years)"}</h2><p class="muted" style="margin:0 0 6px;font-size:8px">${lang === "zh" ? "依本學科逐題課題標記的得分自動生成；結果包含已覆蓋的評估及題目數。" : "Auto-generated from current-subject question-level topic tags; evidence includes the assessments and items covered."}</p><table class="topic-table"><thead><tr><th>${lang === "zh" ? "課題" : "Topic"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th><th class="center">${lang === "zh" ? "狀態" : "Status"}</th></tr></thead><tbody>${allYearsTopicRows}</tbody></table>${recommendationRows ? `<div class="recommendations">${recommendationRows}</div>` : ""}</section>` : ""}<section class="section"><h2 class="section-title">${lang === "zh" ? "評估總覽（本學科跨學年）" : "Assessment Overview (Current Subject, All Years)"}</h2><table><thead><tr><th>${lang === "zh" ? "評估" : "Assessment"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th><th class="center">${lang === "zh" ? "排名" : "Rank"}</th></tr></thead><tbody>${assessmentRows || `<tr><td colspan="4" class="muted">—</td></tr>`}</tbody></table></section>${detailSections ? `<section class="section question-analysis"><h2 class="section-title">${lang === "zh" ? "每項評估逐題分析" : "Per-assessment Question Analysis"}</h2>${detailSections}</section>` : ""}${currentTopicRows ? `<section class="section"><h2 class="section-title">${lang === "zh" ? "目前科目學習單元分析" : "Current Subject Learning Unit Analysis"}</h2><table><thead><tr><th>${lang === "zh" ? "學習單元" : "Learning unit"}</th><th class="center">${lang === "zh" ? "得分" : "Score"}</th><th class="center">%</th></tr></thead><tbody>${currentTopicRows}</tbody></table></section>` : ""}<footer class="footer"><span>${escapeHtml(displayName)} · ${lang === "zh" ? `${subjectName} 跨學年報告` : `${subjectName} all-years report`}</span><span>${lang === "zh" ? "由 Maths Analytics 生成" : "Generated by Maths Analytics"}</span></footer></main><script>window.onload=()=>window.print();<\/script></body></html>`);
     win.document.close();
   };
 
@@ -3849,6 +3921,22 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
               <p className="text-3xl font-bold font-mono text-green-600">{topicAnalysis.filter(tp => tp.status === "strong").length}</p>
             </div>
           </div>
+
+          {absentAssessments.length > 0 && (
+            <div className="rounded-xl border border-orange-200 bg-orange-50/70 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="text-sm font-bold text-orange-900">{lang === "zh" ? "ABS 對個人成績及加權的影響" : "ABS impact on personal results & weighting"}</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-orange-800">{lang === "zh" ? `此學生有 ${absentAssessments.length} 項缺席紀錄；每項均以 0 分計入該學生的個人成績及 CA／大考加權，但不會加入班級平均、排名、弱點或課題分析。` : `This student has ${absentAssessments.length} absence record(s). Each counts as 0 only in this student's personal result and CA/Exam weighting, and remains excluded from class averages, rank, weakness and topic analysis.`}</p>
+                </div>
+                <Badge className="bg-orange-100 text-orange-800 hover:bg-orange-100">ABS × {absentAssessments.length}</Badge>
+              </div>
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="rounded-lg border border-orange-200 bg-white/80 p-2.5"><div className="flex items-center justify-between gap-2"><span className="text-xs font-bold text-blue-800">{lang === "zh" ? "小測（CA）" : "CA"}</span><span className="font-mono text-xs font-bold text-orange-700">{absentCAAssessments.length} ABS</span></div><p className="mt-1 text-[11px] leading-relaxed text-slate-600">{absentCAAssessments.length === 0 ? (lang === "zh" ? "沒有小測缺席紀錄。" : "No CA absences.") : caAbsImpact !== null ? (lang === "zh" ? `現有加權 ${caTotal ?? "—"}%；如只查看已完成紀錄為 ${caTotalWithoutAbs ?? "—"}%；ABS 令結果降低 ${caAbsImpact} 個百分點。` : `Weighted result: ${caTotal ?? "—"}%; completed-record view: ${caTotalWithoutAbs ?? "—"}%; ABS lowers the result by ${caAbsImpact} percentage point(s).`) : (lang === "zh" ? `現有加權 ${caTotal ?? "—"}%；暫無其他完整 CA 成績作比較。` : `Weighted result: ${caTotal ?? "—"}%; no other complete CA record is available for comparison.`)}</p></div>
+                <div className="rounded-lg border border-orange-200 bg-white/80 p-2.5"><div className="flex items-center justify-between gap-2"><span className="text-xs font-bold text-red-800">{lang === "zh" ? "大考（Exam）" : "Exam"}</span><span className="font-mono text-xs font-bold text-orange-700">{absentExamAssessments.length} ABS</span></div><p className="mt-1 text-[11px] leading-relaxed text-slate-600">{absentExamAssessments.length === 0 ? (lang === "zh" ? "沒有大考缺席紀錄。" : "No exam absences.") : examAbsImpact !== null ? (lang === "zh" ? `現有加權 ${examTotal ?? "—"}%；如只查看已完成紀錄為 ${examTotalWithoutAbs ?? "—"}%；ABS 令結果降低 ${examAbsImpact} 個百分點。` : `Weighted result: ${examTotal ?? "—"}%; completed-record view: ${examTotalWithoutAbs ?? "—"}%; ABS lowers the result by ${examAbsImpact} percentage point(s).`) : (lang === "zh" ? `現有加權 ${examTotal ?? "—"}%；暫無其他完整大考成績作比較。` : `Weighted result: ${examTotal ?? "—"}%; no other complete exam record is available for comparison.`)}</p></div>
+              </div>
+            </div>
+          )}
 
           {allYearsAssessments.length > 0 && (
             <div className="bg-white rounded-xl border border-blue-100 overflow-hidden">
