@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.22.0";
+const APP_VERSION = "v1.23.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -82,10 +82,11 @@ function groupAssessmentsBySubcategory<T extends AssessmentDisplayItem>(items: T
 function groupByNature(
   studentId: string,
   assessments: Array<{ id: string; natureId?: string; markSheet: MarkItem[]; scores: ScoreEntry[] }>,
+  includeAbsAsZero = true,
 ): Map<string, { earned: number; max: number }> {
   const byNature = new Map<string, { earned: number; max: number }>();
   assessments.forEach(a => {
-    const total = getScoreTotal(a, studentId);
+    const total = includeAbsAsZero ? getPersonalScoreTotal(a, studentId) : getScoreTotal(a, studentId);
     const max = getAssessmentMax(a);
     if (total === null || max === 0) return;
     const nid = a.natureId ?? "";
@@ -105,8 +106,9 @@ function calcCATotal(
   assessments: Array<{ id: string; natureId?: string; markSheet: MarkItem[]; scores: ScoreEntry[] }>,
   getNature: (id: string) => { isExam: boolean } | undefined,
   scheme: WeightingScheme | undefined,
+  includeAbsAsZero = true,
 ): number | null {
-  const byNature = groupByNature(studentId, assessments);
+  const byNature = groupByNature(studentId, assessments, includeAbsAsZero);
   if (byNature.size === 0) return null;
 
   if (!scheme) {
@@ -151,8 +153,9 @@ function calcExamTotal(
   assessments: Array<{ id: string; natureId?: string; markSheet: MarkItem[]; scores: ScoreEntry[] }>,
   getNature: (id: string) => { isExam: boolean } | undefined,
   scheme: WeightingScheme | undefined,
+  includeAbsAsZero = true,
 ): number | null {
-  const byNature = groupByNature(studentId, assessments);
+  const byNature = groupByNature(studentId, assessments, includeAbsAsZero);
   if (byNature.size === 0) return null;
 
   if (!scheme) {
@@ -280,6 +283,16 @@ function getScoreTotal(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[]
   return assessment.markSheet
     .filter(item => !item.isSection)
     .reduce((sum, item) => sum + scoreMap[item.id], 0);
+}
+
+/**
+ * Personal-result total: a recorded ABS counts as 0 for that student's own
+ * score and weighting. Class statistics and weakness analytics continue to
+ * use getScoreTotal(), so ABS is excluded from those calculations.
+ */
+function getPersonalScoreTotal(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }, studentId: string): number | null {
+  if (getScoreEntryState(assessment, studentId) === "absent") return 0;
+  return getScoreTotal(assessment, studentId);
 }
 
 function getAssessmentMax(assessment: { markSheet: MarkItem[] }): number {
@@ -2290,8 +2303,9 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
         hasCA: g.caAssess.length > 0, hasExam: g.examAssess.length > 0,
       };
     });
-    const caTotal = calcCATotal(student.id, assessments, getNature, scheme);
-    const examTotal = calcExamTotal(student.id, assessments, getNature, scheme);
+    // Weakness Analysis deliberately excludes ABS, even though ABS is 0 in personal totals elsewhere.
+    const caTotal = calcCATotal(student.id, assessments, getNature, scheme, false);
+    const examTotal = calcExamTotal(student.id, assessments, getNature, scheme, false);
     return { student, termRows, caTotal, examTotal };
   }).sort((a, b) => ((b.caTotal ?? 0) - (a.caTotal ?? 0)));
 
@@ -2299,7 +2313,10 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
 
   return (
     <div className="h-full overflow-y-auto p-4 space-y-4">
-      <h2 className="text-xl font-bold text-slate-800">{lang === "zh" ? "弱點分析" : "Weakness Analysis"} — {cls.name}</h2>
+      <div>
+        <h2 className="text-xl font-bold text-slate-800">{lang === "zh" ? "弱點分析" : "Weakness Analysis"} — {cls.name}</h2>
+        <p className="mt-1 text-xs text-slate-500">{lang === "zh" ? "ABS 不納入全班弱點、平均、排名或課題分析；只會以 0 分計入該學生的個人成績及加權總分。" : "ABS is excluded from class weakness, averages, ranks and topic analysis; it counts as 0 only in that student's personal score and weighted total."}</p>
+      </div>
 
       <Tabs defaultValue="topics">
         <div className="overflow-x-auto mb-4">
@@ -2558,7 +2575,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const getStudentAssessmentTotal = (studentId: string, assessmentId: string) => {
     const a = assessments.find(x => x.id === assessmentId);
     if (!a) return null;
-    return getScoreTotal(a, studentId);
+    return getPersonalScoreTotal(a, studentId);
   };
 
   const handleExportCSV = () => {
@@ -2657,15 +2674,16 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     collapsedTerms.has(g.term) ? [] : displayedTermAssessments(g)
   );
   const colStats = flatVisibleAssess.map(a => {
+    const sourceAssessment = assessments.find(assessment => assessment.id === a.id);
     const scores = sortedStudents
-      .map(s => getStudentAssessmentTotal(s.id, a.id))
+      .map(s => sourceAssessment ? getScoreTotal(sourceAssessment, s.id) : null)
       .filter((v): v is number => v !== null);
     if (scores.length === 0) return { avg: null, high: null, low: null };
     const avg = Math.round(scores.reduce((s, v) => s + v, 0) / scores.length * 10) / 10;
     return { avg, high: Math.max(...scores), low: Math.min(...scores) };
   });
-  const caScores = sortedStudents.map(s => calcCATotal(s.id, assessments, getNature, scheme)).filter((v): v is number => v !== null);
-  const examScores = sortedStudents.map(s => calcExamTotal(s.id, assessments, getNature, scheme)).filter((v): v is number => v !== null);
+  const caScores = sortedStudents.map(s => calcCATotal(s.id, assessments, getNature, scheme, false)).filter((v): v is number => v !== null);
+  const examScores = sortedStudents.map(s => calcExamTotal(s.id, assessments, getNature, scheme, false)).filter((v): v is number => v !== null);
   const caStat = caScores.length > 0 ? { avg: Math.round(caScores.reduce((s,v)=>s+v,0)/caScores.length*10)/10, high: Math.max(...caScores), low: Math.min(...caScores) } : null;
   const examStat = examScores.length > 0 ? { avg: Math.round(examScores.reduce((s,v)=>s+v,0)/examScores.length*10)/10, high: Math.max(...examScores), low: Math.min(...examScores) } : null;
 
@@ -2711,14 +2729,14 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
       const assessmentHistory = assessments.map(a => {
         const entry = a.scores.find(s => s.studentId === student.id);
         const isAbsent = entry?.isAbsent ?? false;
-        const total = isAbsent ? null : getScoreTotal(a, student.id);
+        const total = getPersonalScoreTotal(a, student.id);
         const entryState = getScoreEntryState(a, student.id);
         const max = getAssessmentMax(a);
         const pct = max > 0 && total !== null ? Math.round((total / max) * 100) : null;
         const nature = getNature(a.natureId ?? "");
         const classTotals = cls.students.map(s => getScoreTotal(a, s.id)).filter(v => v !== null) as number[];
         classTotals.sort((a, b) => b - a);
-        const rank = total !== null ? classTotals.indexOf(total) + 1 : null;
+        const rank = !isAbsent && total !== null ? classTotals.indexOf(total) + 1 : null;
         return {
           id: a.id,
           title: lang === "zh" && a.titleCht ? a.titleCht : a.title,
@@ -2769,7 +2787,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         <td style="padding:5px 8px;font-weight:600">${a.title}${a.code ? ` (${a.code})` : ""}</td>
         <td style="padding:5px 8px;text-align:center"><span style="background:${a.isExam ? "#ede9fe" : "#dbeafe"};color:${a.isExam ? "#6d28d9" : "#1d4ed8"};border-radius:3px;padding:1px 5px;font-size:9px;font-weight:600">${a.nature || (a.isExam ? "Exam" : "CA")}</span></td>
         <td style="padding:5px 8px;text-align:center;color:#64748b">${a.date || "—"}</td>
-        <td style="padding:5px 8px;text-align:center;font-family:monospace">${a.isAbsent ? (lang === "zh" ? "缺席" : "ABS") : a.total !== null ? `${a.total}/${a.max}` : a.entryState === "incomplete" ? (lang === "zh" ? "未完成" : "Pending") : "—"}</td>
+        <td style="padding:5px 8px;text-align:center;font-family:monospace">${a.isAbsent ? (lang === "zh" ? `缺席（0/${a.max}）` : `ABS (0/${a.max})`) : a.total !== null ? `${a.total}/${a.max}` : a.entryState === "incomplete" ? (lang === "zh" ? "未完成" : "Pending") : "—"}</td>
         <td style="padding:5px 8px;text-align:center;font-weight:700;font-family:monospace;color:${a.pct !== null ? colorForPct(a.pct) : "#94a3b8"}">${a.pct !== null ? `${a.pct}%` : "—"}</td>
         <td style="padding:5px 8px;text-align:center;font-family:monospace;color:#64748b">${a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
       </tr>`;
@@ -2960,10 +2978,14 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                       <React.Fragment key={g.term}>
                         {displayedTermAssessments(g).map((a, i) => {
                           const total = getStudentAssessmentTotal(student.id, a.id);
+                          const sourceAssessment = assessments.find(assessment => assessment.id === a.id);
+                          const isAbsent = sourceAssessment ? getScoreEntryState(sourceAssessment, student.id) === "absent" : false;
                           const pct = total !== null && a.max > 0 ? Math.round((total / a.max) * 100) : null;
                           return (
                             <td key={a.id} className={cn("px-2 py-2 text-center", a.isExam && "bg-red-50/20", i === 0 && "border-l border-slate-100")}>
-                              {total !== null ? (
+                              {isAbsent ? (
+                                <span className="font-mono font-bold text-orange-600">ABS (0)</span>
+                              ) : total !== null ? (
                                 <div>
                                   <span className={cn("font-mono font-bold", pct !== null && pct >= 70 ? "text-green-600" : pct !== null && pct >= 50 ? "text-amber-600" : "text-red-600")}>{total}</span>
                                   {pct !== null && <span className="text-slate-400 text-[10px] ml-0.5">({pct}%)</span>}
@@ -3353,14 +3375,14 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
 
   const assessmentHistory = student ? assessments.map(a => {
     const entry = a.scores.find(score => score.studentId === student.id);
-    const total = getScoreTotal(a, student.id);
+    const total = getPersonalScoreTotal(a, student.id);
     const entryState = getScoreEntryState(a, student.id);
     const max = getAssessmentMax(a);
     const pct = max > 0 && total !== null ? Math.round((total / max) * 100) : null;
     const nature = getNature(a.natureId ?? "");
     const classTotals = cls.students.map(s => getScoreTotal(a, s.id)).filter(v => v !== null) as number[];
     classTotals.sort((a, b) => b - a);
-    const rank = total !== null ? classTotals.indexOf(total) + 1 : null;
+    const rank = !entry?.isAbsent && total !== null ? classTotals.indexOf(total) + 1 : null;
     return { id: a.id, title: lang === "zh" && a.titleCht ? a.titleCht : a.title, code: a.code, date: a.date, natureId: a.natureId, nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"), isExam: nature?.isExam ?? false, isAbsent: entry?.isAbsent ?? false, entryState, total, max, pct, rank, classSize: classTotals.length };
   }) : [];
 
@@ -3435,7 +3457,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         if (!historyStudent) return [];
         return historyClass.assessments.map(historyAssessment => {
           const entry = historyAssessment.scores.find(score => score.studentId === historyStudent.id);
-          const total = getScoreTotal(historyAssessment, historyStudent.id);
+          const total = getPersonalScoreTotal(historyAssessment, historyStudent.id);
           const max = getAssessmentMax(historyAssessment);
           const pct = total !== null && max > 0 ? Math.round((total / max) * 100) : null;
           const scoreMap = getScoreMap(historyAssessment, historyStudent.id);
@@ -3498,7 +3520,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
             nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"),
             isExam: nature?.isExam ?? false,
             total, max, pct, isAbsent: entry?.isAbsent ?? false, entryState: getScoreEntryState(historyAssessment, historyStudent.id),
-            rank: total !== null ? classTotals.indexOf(total) + 1 : null,
+            rank: !entry?.isAbsent && total !== null ? classTotals.indexOf(total) + 1 : null,
             classSize: classTotals.length,
             classAverage: classTotals.length > 0 ? classTotals.reduce((sum, value) => sum + value, 0) / classTotals.length : null,
             questionDetails,
