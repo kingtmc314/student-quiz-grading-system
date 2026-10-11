@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.21.0";
+const APP_VERSION = "v1.22.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -241,26 +241,45 @@ function colorForPct(pct: number | null): string {
   return pct >= 70 ? "#22c55e" : pct >= 50 ? "#f59e0b" : "#ef4444";
 }
 
-function getScoreTotal(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }, studentId: string): number | null {
-  const entry = assessment.scores.find(s => s.studentId === studentId);
-  if (!entry) return null;
-  if (entry.isAbsent) return null; // Absent students excluded from totals
-  if (Array.isArray(entry.scores)) {
-    return (entry.scores as Array<{ itemId: string; score: number | null }>).reduce((s, e) => s + (e.score ?? 0), 0);
-  }
-  return Object.values(entry.scores as Record<string, number | null>).reduce((s: number, v) => s + (v ?? 0), 0);
-}
+type ScoreEntryState = "not-entered" | "absent" | "incomplete" | "complete";
 
+/** Returns numeric marks only. Blank/null fields are deliberately omitted, never converted to zero. */
 function getScoreMap(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }, studentId: string): Record<string, number> {
   const entry = assessment.scores.find(s => s.studentId === studentId);
   if (!entry || entry.isAbsent) return {};
   const map: Record<string, number> = {};
   if (Array.isArray(entry.scores)) {
-    (entry.scores as Array<{ itemId: string; score: number | null }>).forEach(s => { map[s.itemId] = s.score ?? 0; });
+    (entry.scores as Array<{ itemId: string; score: number | null }>).forEach(s => {
+      if (typeof s.score === "number" && Number.isFinite(s.score)) map[s.itemId] = s.score;
+    });
   } else {
-    Object.entries(entry.scores as Record<string, number | null>).forEach(([k, v]) => { map[k] = v ?? 0; });
+    Object.entries(entry.scores as Record<string, number | null>).forEach(([k, v]) => {
+      if (typeof v === "number" && Number.isFinite(v)) map[k] = v;
+    });
   }
   return map;
+}
+
+/**
+ * A score contributes only when every non-section item has a numeric mark.
+ * A literal 0 is numeric and valid; blank/null and ABS never contribute.
+ */
+function getScoreEntryState(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }, studentId: string): ScoreEntryState {
+  const entry = assessment.scores.find(s => s.studentId === studentId);
+  if (!entry) return "not-entered";
+  if (entry.isAbsent) return "absent";
+  const questions = assessment.markSheet.filter(item => !item.isSection);
+  if (questions.length === 0) return "not-entered";
+  const scoreMap = getScoreMap(assessment, studentId);
+  return questions.every(question => typeof scoreMap[question.id] === "number") ? "complete" : "incomplete";
+}
+
+function getScoreTotal(assessment: { markSheet: MarkItem[]; scores: ScoreEntry[] }, studentId: string): number | null {
+  if (getScoreEntryState(assessment, studentId) !== "complete") return null;
+  const scoreMap = getScoreMap(assessment, studentId);
+  return assessment.markSheet
+    .filter(item => !item.isSection)
+    .reduce((sum, item) => sum + scoreMap[item.id], 0);
 }
 
 function getAssessmentMax(assessment: { markSheet: MarkItem[] }): number {
@@ -298,7 +317,9 @@ function AssessmentDetailAnalysis({
 }) {
   const questions = assessment.markSheet.filter(item => !item.isSection);
   const maxTotal = getAssessmentMax(assessment);
-  const nonAbsentEntries = assessment.scores.filter(entry => !entry.isAbsent);
+  const enteredNonAbsentEntries = assessment.scores.filter(entry => !entry.isAbsent);
+  const completeEntries = enteredNonAbsentEntries.filter(entry => getScoreEntryState(assessment, entry.studentId) === "complete");
+  const incompleteCount = enteredNonAbsentEntries.filter(entry => getScoreEntryState(assessment, entry.studentId) === "incomplete").length;
   const absentCount = assessment.scores.filter(entry => entry.isAbsent).length;
   const totals = students
     .map(student => getScoreTotal(assessment, student.id))
@@ -311,7 +332,7 @@ function AssessmentDetailAnalysis({
   const natureName = nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified");
 
   const questionStats = questions.map(item => {
-    const values = nonAbsentEntries
+    const values = completeEntries
       .map(entry => getScoreMap(assessment, entry.studentId)[item.id])
       .filter((score): score is number => typeof score === "number");
     const avg = values.length > 0 ? values.reduce((sum, score) => sum + score, 0) / values.length : null;
@@ -370,9 +391,9 @@ function AssessmentDetailAnalysis({
   const strengthQuestions = questionStats.filter(item => item.pct !== null).sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1)).slice(0, 2);
   const mappedQuestionCount = questionStats.filter(item => Boolean(item.topicId)).length;
   const priorityTopics = topicStats.filter(topic => topic.key !== "__untagged__" && topic.pct !== null).slice(0, 2);
-  const scoredValueCount = questionStats.reduce((sum, item) => sum + item.values.length, 0);
+  const enteredValueCount = questions.reduce((count, item) => count + enteredNonAbsentEntries.filter(entry => typeof getScoreMap(assessment, entry.studentId)[item.id] === "number").length, 0);
   const completionPct = students.length > 0 && questions.length > 0
-    ? Math.round((scoredValueCount / (students.length * questions.length)) * 100)
+    ? Math.round((enteredValueCount / (students.length * questions.length)) * 100)
     : 0;
 
   const statTone = (pct: number | null) => pct === null
@@ -397,7 +418,8 @@ function AssessmentDetailAnalysis({
           {[
             { label: lang === "zh" ? "評分題目" : "Mark items", value: String(questions.length), tone: "text-slate-700" },
             { label: lang === "zh" ? "最高總分" : "Total marks", value: maxTotal > 0 ? String(maxTotal) : "—", tone: "text-slate-700" },
-            { label: lang === "zh" ? "已評分" : "Graded", value: `${gradedCount}/${students.length}`, tone: "text-blue-600" },
+            { label: lang === "zh" ? "已評分（完整）" : "Graded (complete)", value: `${gradedCount}/${students.length}`, tone: "text-blue-600" },
+            { label: lang === "zh" ? "未完成（不計分）" : "Incomplete (excluded)", value: String(incompleteCount), tone: incompleteCount > 0 ? "text-amber-600" : "text-slate-500" },
             { label: lang === "zh" ? "輸入完整度" : "Entry completion", value: `${completionPct}%`, tone: completionPct === 100 ? "text-emerald-600" : "text-amber-600" },
             { label: lang === "zh" ? "班級平均" : "Class average", value: average !== null ? `${average.toFixed(1)}/${maxTotal}` : "—", tone: statTone(average !== null && maxTotal > 0 ? Math.round((average / maxTotal) * 100) : null) },
             { label: lang === "zh" ? "缺席" : "Absent", value: String(absentCount), tone: absentCount > 0 ? "text-orange-600" : "text-slate-500" },
@@ -523,6 +545,8 @@ async function generateAssessmentPdf({
     return { student, isAbsent, total, pct };
   });
   const gradedRows = rows.filter((row): row is typeof row & { total: number } => row.total !== null);
+  const completeEntries = assessment.scores.filter(entry => getScoreEntryState(assessment, entry.studentId) === "complete");
+  const incompleteCount = assessment.scores.filter(entry => getScoreEntryState(assessment, entry.studentId) === "incomplete").length;
   const average = gradedRows.length > 0 ? gradedRows.reduce((sum, row) => sum + row.total, 0) / gradedRows.length : null;
   const absentCount = rows.filter(row => row.isAbsent).length;
   const sortedTotals = gradedRows.map(row => row.total).sort((a, b) => a - b);
@@ -549,7 +573,7 @@ async function generateAssessmentPdf({
     else scoreBands[4].count += 1;
   });
   const questionRows = questions.map(item => {
-    const scores = assessment.scores.filter(entry => !entry.isAbsent)
+    const scores = completeEntries
       .map(entry => getScoreMap(assessment, entry.studentId)[item.id])
       .filter((score): score is number => typeof score === "number");
     const averageScore = scores.length > 0 ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null;
@@ -569,7 +593,8 @@ async function generateAssessmentPdf({
     };
   });
   const expectedScores = students.length * questions.length;
-  const completion = expectedScores > 0 ? Math.round((questionRows.reduce((sum, item) => sum + item.entered, 0) / expectedScores) * 100) : 0;
+  const enteredValues = questions.reduce((count, item) => count + assessment.scores.filter(entry => !entry.isAbsent && typeof getScoreMap(assessment, entry.studentId)[item.id] === "number").length, 0);
+  const completion = expectedScores > 0 ? Math.round((enteredValues / expectedScores) * 100) : 0;
   const topicRows = Array.from(questionRows.reduce((groups, item) => {
     const key = item.topic ? `${item.topic.unit}::${item.topic.objective}` : "__untagged__";
     const current = groups.get(key) ?? {
@@ -630,7 +655,8 @@ async function generateAssessmentPdf({
     <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "整體概況" : "Overview"}</h2><div class="pdf-stats">
       <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "評分題目" : "Mark Items"}</div><div class="pdf-stat-value">${questions.length}</div></div>
       <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "最高總分" : "Total Marks"}</div><div class="pdf-stat-value">${totalMarks || "—"}</div></div>
-      <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "已評分" : "Graded"}</div><div class="pdf-stat-value">${gradedRows.length}/${students.length}</div></div>
+      <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "已評分（完整）" : "Graded (complete)"}</div><div class="pdf-stat-value">${gradedRows.length}/${students.length}</div></div>
+      <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "未完成（不計分）" : "Incomplete (excluded)"}</div><div class="pdf-stat-value" style="color:${incompleteCount > 0 ? "#d97706" : "#475569"}">${incompleteCount}</div></div>
       <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "輸入完整度" : "Entry Completion"}</div><div class="pdf-stat-value" style="color:${completion === 100 ? "#059669" : "#d97706"}">${completion}%</div></div>
       <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "班級平均" : "Class Average"}</div><div class="pdf-stat-value" style="color:${colorForScore(average !== null && totalMarks > 0 ? Math.round((average / totalMarks) * 100) : null)}">${average !== null ? `${average.toFixed(1)}/${totalMarks}` : "—"}</div></div>
       <div class="pdf-stat"><div class="pdf-label">${lang === "zh" ? "缺席" : "Absent"}</div><div class="pdf-stat-value" style="color:${absentCount > 0 ? "#ea580c" : "#475569"}">${absentCount}</div></div>
@@ -638,7 +664,7 @@ async function generateAssessmentPdf({
     <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "整體判讀、分布及教學焦點" : "Interpretation, Distribution & Teaching Focus"}</h2><div class="diagnostic-grid"><div class="diagnostic-card"><h3>${lang === "zh" ? "班級表現判讀" : "Class performance interpretation"}</h3><p>${assessmentNarrative}</p><p style="margin-top:6px">${lang === "zh" ? "課題標記覆蓋" : "Topic-tag coverage"}: <strong>${mappedQuestionCount}/${questions.length}</strong> ${lang === "zh" ? "題" : "items"}</p></div><div class="diagnostic-card"><h3>${lang === "zh" ? "成績分布（已評分學生）" : "Score distribution (graded students)"}</h3>${scoreDistributionRows}</div><div class="diagnostic-card"><h3>${lang === "zh" ? "優先重教題目" : "Priority re-teaching questions"}</h3><ul>${priorityList}</ul><p style="margin-top:6px">${lang === "zh" ? "做法：先用最低表現題作診斷；示範解法後以變式短題及退出卷確認理解。" : "Action: diagnose with the lowest-performing item, model the method, then use short variations and an exit ticket."}</p></div></div></section>
     <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "課題達成度分析" : "Topic Attainment Analysis"}</h2>${topicRows.length > 0 ? `<table class="pdf-table"><thead><tr><th>${lang === "zh" ? "課題／學習目標" : "Topic / learning objective"}</th><th class="pdf-number">${lang === "zh" ? "題數" : "Items"}</th><th class="pdf-number">${lang === "zh" ? "輸入" : "Entered"}</th><th class="pdf-number">${lang === "zh" ? "平均" : "Average"}</th><th class="pdf-number">%</th></tr></thead><tbody>${topicAnalysisRows}</tbody></table>` : `<p class="muted">${lang === "zh" ? "尚未有可作課題分析的題目。" : "No topic-tagged questions are available for analysis yet."}</p>`}<div class="diagnostic-grid" style="grid-template-columns:1fr 1fr;margin-top:8px"><div class="diagnostic-card"><h3>${lang === "zh" ? "優勢證據" : "Evidence of strength"}</h3><ul>${strengthList}</ul></div><div class="diagnostic-card"><h3>${lang === "zh" ? "建議課堂跟進" : "Suggested lesson follow-up"}</h3><p>${lang === "zh" ? "以低於 50% 的課題安排小組再教，將 50–69% 課題放進鞏固練習；70% 以上課題可加入多步或非例行題延伸。" : "Re-teach topics below 50% in a small group, reinforce 50–69% topics through consolidation practice, and extend 70%+ topics with multi-step or non-routine questions."}</p></div></div></section>
     <section class="pdf-section allow-split"><h2 class="pdf-heading">${lang === "zh" ? "逐題表現與課題對照" : "Question Analysis & Topic Mapping"}</h2>${questions.length > 0 ? `<table class="pdf-table"><thead><tr><th>${lang === "zh" ? "題號" : "Question"}</th><th>${lang === "zh" ? "所屬課題／目標" : "Topic / objective"}</th><th class="pdf-number">${lang === "zh" ? "平均" : "Average"}</th><th class="pdf-number">%</th><th class="pdf-number">${lang === "zh" ? "已輸入" : "Entered"}</th><th class="pdf-number">${lang === "zh" ? "滿分人數" : "Full Marks"}</th></tr></thead><tbody>${questionAnalysisRows}</tbody></table>` : `<p class="muted">${lang === "zh" ? "尚未設定評分表。" : "No mark sheet configured."}</p>`}</section>
-    <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "學生總分" : "Student Totals"}</h2><table class="pdf-table"><thead><tr><th>${lang === "zh" ? "班號" : "Class No."}</th><th>${lang === "zh" ? "學生姓名" : "Student"}</th><th class="pdf-number">${lang === "zh" ? "得分" : "Score"}</th><th class="pdf-number">%</th><th>${lang === "zh" ? "狀態" : "Status"}</th></tr></thead><tbody>${rows.map(row => { const studentName = lang === "zh" && row.student.nameCht ? row.student.nameCht : row.student.name; const status = row.isAbsent ? (lang === "zh" ? "缺席" : "Absent") : row.total !== null ? (lang === "zh" ? "已評分" : "Graded") : (lang === "zh" ? "未輸入" : "Not entered"); return `<tr><td>${escapeHtml(row.student.classNo)}</td><td>${escapeHtml(studentName)}</td><td class="pdf-number">${row.isAbsent ? "ABS" : row.total !== null ? `${row.total}/${totalMarks}` : "—"}</td><td class="pdf-number" style="color:${colorForScore(row.pct)};font-weight:700">${row.pct !== null ? `${row.pct}%` : "—"}</td><td>${status}</td></tr>`; }).join("")}</tbody></table></section>
+    <section class="pdf-section"><h2 class="pdf-heading">${lang === "zh" ? "學生總分" : "Student Totals"}</h2><table class="pdf-table"><thead><tr><th>${lang === "zh" ? "班號" : "Class No."}</th><th>${lang === "zh" ? "學生姓名" : "Student"}</th><th class="pdf-number">${lang === "zh" ? "得分" : "Score"}</th><th class="pdf-number">%</th><th>${lang === "zh" ? "狀態" : "Status"}</th></tr></thead><tbody>${rows.map(row => { const studentName = lang === "zh" && row.student.nameCht ? row.student.nameCht : row.student.name; const state = getScoreEntryState(assessment, row.student.id); const status = row.isAbsent ? (lang === "zh" ? "缺席" : "Absent") : row.total !== null ? (lang === "zh" ? "已評分" : "Graded") : state === "incomplete" ? (lang === "zh" ? "未完成（不計分）" : "Incomplete (excluded)") : (lang === "zh" ? "未輸入" : "Not entered"); return `<tr><td>${escapeHtml(row.student.classNo)}</td><td>${escapeHtml(studentName)}</td><td class="pdf-number">${row.isAbsent ? "ABS" : row.total !== null ? `${row.total}/${totalMarks}` : "—"}</td><td class="pdf-number" style="color:${colorForScore(row.pct)};font-weight:700">${row.pct !== null ? `${row.pct}%` : "—"}</td><td>${status}</td></tr>`; }).join("")}</tbody></table></section>
     <footer class="pdf-footer"><span>${escapeHtml(yearLabel)} · ${escapeHtml(className)} · ${escapeHtml(assessmentTitle)}</span><span>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(generatedAt)}</span></footer>`;
   const printWindow = window.open("", "_blank");
   if (!printWindow) throw new Error(lang === "zh" ? "無法開啟報告視窗，請允許彈出視窗。" : "Unable to open the report window. Please allow popups.");
@@ -1299,11 +1325,15 @@ function GradingTab({
   const markSheet = assessment?.markSheet ?? [];
   const questions = markSheet.filter(i => !i.isSection);
   const maxTotal = totalMaxMarks(markSheet);
+  const completeStudentCount = assessment ? sortedStudents.filter(student => getScoreEntryState(assessment, student.id) === "complete").length : 0;
+  const incompleteStudentCount = assessment ? sortedStudents.filter(student => getScoreEntryState(assessment, student.id) === "incomplete").length : 0;
 
   const currentTotal = questions.reduce((s, q) => {
     const v = draftScores[q.id];
     return s + (typeof v === "number" ? v : 0);
   }, 0);
+  const enteredQuestionCount = questions.filter(q => typeof draftScores[q.id] === "number").length;
+  const isDraftComplete = questions.length > 0 && enteredQuestionCount === questions.length;
 
   const handleScoreChange = (itemId: string, raw: string) => {
     const val = raw === "" ? "" : parseFloat(raw);
@@ -1320,7 +1350,8 @@ function GradingTab({
       } else {
         const scoresRecord: Record<string, number | null> = {};
         questions.forEach(q => {
-          scoresRecord[q.id] = typeof draftScores[q.id] === "number" ? (draftScores[q.id] as number) : 0;
+          // Keep blanks as null: only an explicit numeric 0 is a scored zero.
+          scoresRecord[q.id] = typeof draftScores[q.id] === "number" ? (draftScores[q.id] as number) : null;
         });
         await upsertScore(yearId, subjectId, classId, assessmentId, { studentId: selectedStudentId, scores: scoresRecord, isAbsent: false });
       }
@@ -1476,7 +1507,8 @@ function GradingTab({
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <span className="font-mono">{t("total")}: {maxTotal}</span>
             <span>·</span>
-            <span>{assessment.scores.filter(s => !s.isAbsent).length}/{cls.students.length} {t("graded")}</span>
+            <span>{completeStudentCount}/{cls.students.length} {t("graded")}</span>
+            {incompleteStudentCount > 0 && <><span>·</span><span className="text-amber-600">{incompleteStudentCount} {lang === "zh" ? "未完成" : "incomplete"}</span></>}
             {assessment.scores.some(s => s.isAbsent) && (
               <><span>·</span><span className="text-orange-500">{assessment.scores.filter(s => s.isAbsent).length} ABS</span></>
             )}
@@ -1526,6 +1558,8 @@ function GradingTab({
                 const total = getStudentTotal(student.id);
                 const studentEntry = assessment?.scores.find(s => s.studentId === student.id);
                 const studentIsAbsent = studentEntry?.isAbsent ?? false;
+                const entryState = assessment ? getScoreEntryState(assessment, student.id) : "not-entered";
+                const isIncomplete = entryState === "incomplete";
                 const isSelected = selectedStudentId === student.id;
                 const isGraded = total !== null || studentIsAbsent;
                 const displayName = lang === "zh" && student.nameCht ? student.nameCht : student.name;
@@ -1538,6 +1572,7 @@ function GradingTab({
                       </div>
                       {studentIsAbsent
                         ? <span className={cn("text-xs font-bold shrink-0 px-1.5 py-0.5 rounded", isSelected ? "bg-orange-300 text-orange-900" : "bg-orange-100 text-orange-600")}>ABS</span>
+                        : isIncomplete ? <span className={cn("text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded", isSelected ? "bg-amber-300 text-amber-950" : "bg-amber-100 text-amber-700")}>{lang === "zh" ? "未完成" : "PENDING"}</span>
                         : isGraded && <span className={cn("text-xs font-mono font-bold shrink-0", isSelected ? "text-blue-100" : "text-blue-600")}>{total}/{maxTotal}</span>
                       }
                     </div>
@@ -1581,7 +1616,11 @@ function GradingTab({
                     {!isAbsent && (
                       <div className="text-right">
                         <p className="text-2xl font-bold font-mono text-blue-600 leading-none">{currentTotal}</p>
-                        <p className="text-xs text-slate-400">/ {maxTotal}{maxTotal > 0 ? ` (${Math.round((currentTotal / maxTotal) * 100)}%)` : ""}</p>
+                        <p className={cn("text-xs", isDraftComplete ? "text-slate-400" : "text-amber-600 font-semibold")}>
+                          {isDraftComplete
+                            ? `/ ${maxTotal}${maxTotal > 0 ? ` (${Math.round((currentTotal / maxTotal) * 100)}%)` : ""}`
+                            : (lang === "zh" ? `未完成 ${enteredQuestionCount}/${questions.length} 題 · 暫不計分` : `Incomplete ${enteredQuestionCount}/${questions.length} items · excluded`)}
+                        </p>
                       </div>
                     )}
                     <button onClick={handleClear} className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors" title={t("clearRecord")}><Trash2 className="w-4 h-4" /></button>
@@ -1808,9 +1847,10 @@ function GradingTab({
                       </thead>
                       <tbody>
                         {bulkPastePreview.map((row, idx) => {
-                          const rowTotal = row.isAbsent ? 0 : Object.values(row.scores).reduce((s: number, v) => s + (v ?? 0), 0);
+                          const isComplete = !row.isAbsent && questions.length > 0 && questions.every(question => typeof row.scores[question.id] === "number");
+                          const rowTotal = isComplete ? Object.values(row.scores).reduce((s: number, v) => s + (v ?? 0), 0) : null;
                           return (
-                            <tr key={idx} className={cn("border-b border-slate-100 last:border-0", !row.matched ? "bg-red-50" : row.isAbsent ? "bg-orange-50" : idx % 2 === 0 ? "bg-white" : "bg-slate-50/50")}>
+                            <tr key={idx} className={cn("border-b border-slate-100 last:border-0", !row.matched ? "bg-red-50" : row.isAbsent ? "bg-orange-50" : !isComplete ? "bg-amber-50" : idx % 2 === 0 ? "bg-white" : "bg-slate-50/50")}>
                               <td className="px-2 py-1.5 text-slate-400 font-mono">{idx + 1}</td>
                               <td className="px-2 py-1.5 font-mono">{row.classNo}</td>
                               <td className="px-2 py-1.5 font-semibold">{row.studentName}</td>
@@ -1827,9 +1867,9 @@ function GradingTab({
                                   );
                                 })
                               )}
-                              <td className="px-2 py-1.5 text-center font-mono font-bold">{row.isAbsent ? "—" : `${rowTotal}/${maxTotal}`}</td>
+                              <td className="px-2 py-1.5 text-center font-mono font-bold">{row.isAbsent || !isComplete ? "—" : `${rowTotal}/${maxTotal}`}</td>
                               <td className="px-2 py-1.5 text-center">
-                                {!row.matched ? <span className="text-red-500 font-bold">✗</span> : row.isAbsent ? <span className="text-orange-500 font-bold">ABS</span> : <span className="text-emerald-500 font-bold">✓</span>}
+                                {!row.matched ? <span className="text-red-500 font-bold">✗</span> : row.isAbsent ? <span className="text-orange-500 font-bold">ABS</span> : !isComplete ? <span className="text-amber-700 font-bold">{lang === "zh" ? "未完成" : "PENDING"}</span> : <span className="text-emerald-500 font-bold">✓</span>}
                               </td>
                             </tr>
                           );
@@ -1913,10 +1953,10 @@ function GradingTab({
                     if (row.isAbsent) {
                       await upsertScore(yearId, subjectId, classId, assessmentId, { studentId: row.studentId, scores: {}, isAbsent: true });
                     } else {
-                      // Fill null scores with 0
+                      // Preserve blanks as null; only explicit 0 is a scored zero.
                       const finalScores: Record<string, number | null> = {};
                       questions.forEach(q => {
-                        finalScores[q.id] = row.scores[q.id] ?? 0;
+                        finalScores[q.id] = row.scores[q.id] ?? null;
                       });
                       await upsertScore(yearId, subjectId, classId, assessmentId, { studentId: row.studentId, scores: finalScores, isAbsent: false });
                     }
@@ -2210,6 +2250,7 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
       const topicItems = assessment.markSheet.filter(i => !i.isSection && i.topicId === topic.id);
       if (topicItems.length === 0) return;
       assessment.scores.forEach((scoreEntry: ScoreEntry) => {
+        if (getScoreEntryState(assessment, scoreEntry.studentId) !== "complete") return;
         const scoreMap = getScoreMap(assessment, scoreEntry.studentId);
         topicItems.forEach(item => {
           totalEarned += scoreMap[item.id] ?? 0;
@@ -2390,8 +2431,10 @@ function WeaknessTab({ yearId, subjectId, classId }: { yearId: string; subjectId
                 const qData = questions.map(q => {
                   const scores: number[] = [];
                   assessment.scores.forEach((entry: ScoreEntry) => {
+                    if (getScoreEntryState(assessment, entry.studentId) !== "complete") return;
                     const scoreMap = getScoreMap(assessment, entry.studentId);
-                    scores.push(scoreMap[q.id] ?? 0);
+                    const score = scoreMap[q.id];
+                    if (typeof score === "number") scores.push(score);
                   });
                   const avg = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
                   const pct = q.maxMark > 0 ? Math.round((avg / q.maxMark) * 100) : 0;
@@ -2669,6 +2712,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         const entry = a.scores.find(s => s.studentId === student.id);
         const isAbsent = entry?.isAbsent ?? false;
         const total = isAbsent ? null : getScoreTotal(a, student.id);
+        const entryState = getScoreEntryState(a, student.id);
         const max = getAssessmentMax(a);
         const pct = max > 0 && total !== null ? Math.round((total / max) * 100) : null;
         const nature = getNature(a.natureId ?? "");
@@ -2683,7 +2727,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
           natureId: a.natureId,
           nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : "",
           isExam: nature?.isExam ?? false,
-          isAbsent, total, max, pct, rank, classSize: classTotals.length,
+          isAbsent, entryState, total, max, pct, rank, classSize: classTotals.length,
         };
       });
       // Topic analysis
@@ -2692,14 +2736,8 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         assessments.forEach(a => {
           const items = a.markSheet.filter(i => !i.isSection && i.topicId === topic.id);
           if (items.length === 0) return;
-          const entry = a.scores.find(s => s.studentId === student.id);
-          if (!entry || entry.isAbsent) return;
-          const scoreMap: Record<string, number> = {};
-          if (Array.isArray(entry.scores)) {
-            (entry.scores as Array<{ itemId: string; score: number | null }>).forEach(s => { scoreMap[s.itemId] = s.score ?? 0; });
-          } else {
-            Object.entries(entry.scores as Record<string, number | null>).forEach(([k, v]) => { scoreMap[k] = v ?? 0; });
-          }
+          if (getScoreEntryState(a, student.id) !== "complete") return;
+          const scoreMap = getScoreMap(a, student.id);
           items.forEach(item => { earned += scoreMap[item.id] ?? 0; tmax += item.maxMark || 0; });
         });
         const pct = tmax > 0 ? Math.round((earned / tmax) * 100) : null;
@@ -2731,7 +2769,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         <td style="padding:5px 8px;font-weight:600">${a.title}${a.code ? ` (${a.code})` : ""}</td>
         <td style="padding:5px 8px;text-align:center"><span style="background:${a.isExam ? "#ede9fe" : "#dbeafe"};color:${a.isExam ? "#6d28d9" : "#1d4ed8"};border-radius:3px;padding:1px 5px;font-size:9px;font-weight:600">${a.nature || (a.isExam ? "Exam" : "CA")}</span></td>
         <td style="padding:5px 8px;text-align:center;color:#64748b">${a.date || "—"}</td>
-        <td style="padding:5px 8px;text-align:center;font-family:monospace">${a.isAbsent ? (lang === "zh" ? "缺席" : "ABS") : a.total !== null ? `${a.total}/${a.max}` : "—"}</td>
+        <td style="padding:5px 8px;text-align:center;font-family:monospace">${a.isAbsent ? (lang === "zh" ? "缺席" : "ABS") : a.total !== null ? `${a.total}/${a.max}` : a.entryState === "incomplete" ? (lang === "zh" ? "未完成" : "Pending") : "—"}</td>
         <td style="padding:5px 8px;text-align:center;font-weight:700;font-family:monospace;color:${a.pct !== null ? colorForPct(a.pct) : "#94a3b8"}">${a.pct !== null ? `${a.pct}%` : "—"}</td>
         <td style="padding:5px 8px;text-align:center;font-family:monospace;color:#64748b">${a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
       </tr>`;
@@ -3041,6 +3079,7 @@ function ChartTab({ yearId, subjectId, classId }: { yearId: string; subjectId: s
       const topicItems = assessment.markSheet.filter(i => !i.isSection && i.topicId === topic.id);
       if (topicItems.length === 0) return;
       assessment.scores.forEach((scoreEntry: ScoreEntry) => {
+        if (getScoreEntryState(assessment, scoreEntry.studentId) !== "complete") return;
         const scoreMap = getScoreMap(assessment, scoreEntry.studentId);
         topicItems.forEach(item => {
           totalEarned += scoreMap[item.id] ?? 0;
@@ -3313,14 +3352,16 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const sortedStudents = [...cls.students].sort((a, b) => a.classNo.localeCompare(b.classNo, undefined, { numeric: true }));
 
   const assessmentHistory = student ? assessments.map(a => {
+    const entry = a.scores.find(score => score.studentId === student.id);
     const total = getScoreTotal(a, student.id);
+    const entryState = getScoreEntryState(a, student.id);
     const max = getAssessmentMax(a);
     const pct = max > 0 && total !== null ? Math.round((total / max) * 100) : null;
     const nature = getNature(a.natureId ?? "");
     const classTotals = cls.students.map(s => getScoreTotal(a, s.id)).filter(v => v !== null) as number[];
     classTotals.sort((a, b) => b - a);
     const rank = total !== null ? classTotals.indexOf(total) + 1 : null;
-    return { id: a.id, title: lang === "zh" && a.titleCht ? a.titleCht : a.title, code: a.code, date: a.date, natureId: a.natureId, nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"), isExam: nature?.isExam ?? false, total, max, pct, rank, classSize: classTotals.length };
+    return { id: a.id, title: lang === "zh" && a.titleCht ? a.titleCht : a.title, code: a.code, date: a.date, natureId: a.natureId, nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"), isExam: nature?.isExam ?? false, isAbsent: entry?.isAbsent ?? false, entryState, total, max, pct, rank, classSize: classTotals.length };
   }) : [];
 
   // Build 3-level hierarchy: Level > Learning Unit > Objective (only with score data)
@@ -3340,6 +3381,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
       assessments.forEach(a => {
         const items = a.markSheet.filter(i => !i.isSection && i.topicId === topic.id);
         if (items.length === 0) return;
+        if (getScoreEntryState(a, student.id) !== "complete") return;
         const scoreMap = getScoreMap(a, student.id);
         items.forEach(item => { earned += scoreMap[item.id] ?? 0; max += item.maxMark || 0; });
       });
@@ -3404,11 +3446,12 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
             .sort((a, b) => b - a);
           const questionDetails = historyAssessment.markSheet.filter(item => !item.isSection).map(item => {
             const classScores = historyClass.students.map(classStudent => {
-              const classEntry = historyAssessment.scores.find(score => score.studentId === classStudent.id);
-              return classEntry && !classEntry.isAbsent ? getScoreMap(historyAssessment, classStudent.id)[item.id] : null;
+              return getScoreEntryState(historyAssessment, classStudent.id) === "complete"
+                ? getScoreMap(historyAssessment, classStudent.id)[item.id]
+                : null;
             }).filter((value): value is number => typeof value === "number");
             const classAverage = classScores.length > 0 ? classScores.reduce((sum, value) => sum + value, 0) / classScores.length : null;
-            const score = entry && !entry.isAbsent ? scoreMap[item.id] ?? 0 : null;
+            const score = getScoreEntryState(historyAssessment, historyStudent.id) === "complete" ? scoreMap[item.id] : null;
             const topic = item.topicId ? historySubject.topics.find(candidate => candidate.id === item.topicId) : undefined;
             return {
               id: item.id,
@@ -3427,7 +3470,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
           const topicDetails = historyAssessment.markSheet.filter(item => !item.isSection && Boolean(item.topicId)).flatMap(item => {
             if (!item.topicId) return [];
             const topic = historySubject.topics.find(candidate => candidate.id === item.topicId);
-            if (!topic || !entry || entry.isAbsent) return [];
+            if (!topic || getScoreEntryState(historyAssessment, historyStudent.id) !== "complete") return [];
             const score = scoreMap[item.id];
             return [{
               topicId: topic.id,
@@ -3436,7 +3479,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
               subjectId: yearSubject.subjectId,
               subjectName: lang === "zh" && historySubject.nameCht ? historySubject.nameCht : historySubject.name,
               subjectCode: historySubject.code || historySubject.name,
-              score: score ?? 0,
+              score,
               max: item.maxMark,
             }];
           });
@@ -3454,7 +3497,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
             natureId: historyAssessment.natureId,
             nature: nature ? (lang === "zh" && nature.nameCht ? nature.nameCht : nature.name) : (lang === "zh" ? "未分類" : "Unclassified"),
             isExam: nature?.isExam ?? false,
-            total, max, pct, isAbsent: entry?.isAbsent ?? false,
+            total, max, pct, isAbsent: entry?.isAbsent ?? false, entryState: getScoreEntryState(historyAssessment, historyStudent.id),
             rank: total !== null ? classTotals.indexOf(total) + 1 : null,
             classSize: classTotals.length,
             classAverage: classTotals.length > 0 ? classTotals.reduce((sum, value) => sum + value, 0) / classTotals.length : null,
@@ -3882,12 +3925,14 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                   const caItems = caSubcategories.flatMap(subcategory => subcategory.assessments);
                   const examItems = sortAssessmentsByCode(termItems.filter(a => a.isExam));
                   // Compute per-term CA% and Exam% totals
-                  const termCaEarned = caItems.reduce((s, a) => s + (a.total ?? 0), 0);
-                  const termCaMax = caItems.reduce((s, a) => s + a.max, 0);
-                  const termCaPct = termCaMax > 0 && caItems.some(a => a.total !== null) ? Math.round((termCaEarned / termCaMax) * 100) : null;
-                  const termExamEarned = examItems.reduce((s, a) => s + (a.total ?? 0), 0);
-                  const termExamMax = examItems.reduce((s, a) => s + a.max, 0);
-                  const termExamPct = termExamMax > 0 && examItems.some(a => a.total !== null) ? Math.round((termExamEarned / termExamMax) * 100) : null;
+                  const completedCAItems = caItems.filter(a => a.total !== null);
+                  const completedExamItems = examItems.filter(a => a.total !== null);
+                  const termCaEarned = completedCAItems.reduce((s, a) => s + (a.total ?? 0), 0);
+                  const termCaMax = completedCAItems.reduce((s, a) => s + a.max, 0);
+                  const termCaPct = termCaMax > 0 ? Math.round((termCaEarned / termCaMax) * 100) : null;
+                  const termExamEarned = completedExamItems.reduce((s, a) => s + (a.total ?? 0), 0);
+                  const termExamMax = completedExamItems.reduce((s, a) => s + a.max, 0);
+                  const termExamPct = termExamMax > 0 ? Math.round((termExamEarned / termExamMax) * 100) : null;
                   return (
                     <div key={term}>
                       {/* Term header with CA/Exam badges */}
@@ -3921,7 +3966,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                           {caSubcategories.map(subcategory => <div key={subcategory.id} className="border-t border-blue-100 first:border-t-0"><div className="px-3 py-1 bg-blue-50/60 flex items-center gap-2"><span className="inline-flex rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">{subcategory.label}</span><span className="text-[10px] text-slate-400">{subcategory.assessments.length} {lang === "zh" ? "項 · Code 排序" : "items · code sorted"}</span></div><table className="w-full text-sm"><tbody>{subcategory.assessments.map(a => (
                             <tr key={a.id} className="border-b border-slate-50 last:border-0">
                               <td className="px-3 py-1.5"><div><span className="font-mono font-bold text-blue-700 text-xs">{a.code || "—"}</span><span className="text-slate-500 text-xs mx-1">·</span><span className="font-semibold text-slate-800 text-xs">{a.title}</span></div></td>
-                              <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.total !== null ? `${a.total}/${a.max}` : "—"}</td>
+                              <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.isAbsent ? "ABS" : a.total !== null ? `${a.total}/${a.max}` : a.entryState === "incomplete" ? (lang === "zh" ? "未完成" : "Pending") : "—"}</td>
                               <td className="px-2 py-1.5 text-center">{a.pct !== null ? <span className={cn("font-mono font-bold text-xs", a.pct >= 70 ? "text-green-600" : a.pct >= 50 ? "text-amber-600" : "text-red-600")}>{a.pct}%</span> : <span className="text-slate-300 text-xs">—</span>}</td>
                               <td className="px-2 py-1.5 text-center font-mono text-slate-500 text-xs">{a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
                             </tr>
@@ -3939,7 +3984,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
                               {examItems.map(a => (
                                 <tr key={a.id} className="border-b border-red-50/60 last:border-0 bg-red-50/10">
                                   <td className="px-3 py-1.5"><div><span className="font-semibold text-slate-800 text-xs">{a.title}</span>{a.code && <span className="text-slate-400 text-xs ml-1">({a.code})</span>}</div></td>
-                                  <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.total !== null ? `${a.total}/${a.max}` : "—"}</td>
+                                  <td className="px-2 py-1.5 text-center font-mono text-slate-700 text-xs">{a.isAbsent ? "ABS" : a.total !== null ? `${a.total}/${a.max}` : a.entryState === "incomplete" ? (lang === "zh" ? "未完成" : "Pending") : "—"}</td>
                                   <td className="px-2 py-1.5 text-center">{a.pct !== null ? <span className={cn("font-mono font-bold text-xs", a.pct >= 70 ? "text-green-600" : a.pct >= 50 ? "text-amber-600" : "text-red-600")}>{a.pct}%</span> : <span className="text-slate-300 text-xs">—</span>}</td>
                                   <td className="px-2 py-1.5 text-center font-mono text-slate-500 text-xs">{a.rank !== null ? `${a.rank}/${a.classSize}` : "—"}</td>
                                 </tr>
