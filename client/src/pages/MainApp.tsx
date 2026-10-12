@@ -38,7 +38,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.25.0";
+const APP_VERSION = "v1.26.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -2614,6 +2614,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const cls = yearId && subjectId && classId ? getClass(yearId, subjectId, classId) : undefined;
 
   const [summaryFilter, setSummaryFilter] = useState<"all" | "ca" | "exam">("all");
+  const [summaryCAFilter, setSummaryCAFilter] = useState<string>("all");
   const [summaryStudentFilter, setSummaryStudentFilter] = useState<"all" | "absent" | "missing" | "late" | "pending">("all");
   const [collapsedTerms, setCollapsedTerms] = useState<Set<string>>(new Set());
 
@@ -2636,7 +2637,9 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     const nature = getNature(assessment.natureId ?? "");
     const isExam = nature?.isExam ?? false;
     const isStarted = assessment.scores.length > 0;
-    return isStarted && (summaryFilter === "all" || (summaryFilter === "ca" ? !isExam : isExam));
+    const matchesMainFilter = summaryFilter === "all" || (summaryFilter === "ca" ? !isExam : isExam);
+    const matchesCAFilter = summaryCAFilter === "all" || (!isExam && assessment.natureId === summaryCAFilter);
+    return isStarted && matchesMainFilter && matchesCAFilter;
   });
   const getStudentStatusCounts = (studentId: string) => statusAssessments.reduce((counts, assessment) => {
     const state = getScoreEntryState(assessment, studentId);
@@ -2672,12 +2675,18 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     };
   });
 
+  const availableCANatures = natures.filter(nature =>
+    !nature.isExam && allAssessData.some(assessment => assessment.natureId === nature.id)
+  );
+
   // Group by term, then CA subcategory (Quiz/Test/Assignment etc.), then natural code order.
   const termGroups = ORDERED_TERMS.map(term => {
     const termAssess = allAssessData.filter(a => a.term === term);
     const rawCA = termAssess.filter(a => !a.isExam);
     const rawExam = termAssess.filter(a => a.isExam);
-    const visibleCA = summaryFilter !== "exam" ? rawCA : [];
+    const visibleCA = summaryFilter !== "exam"
+      ? rawCA.filter(assessment => summaryCAFilter === "all" || assessment.natureId === summaryCAFilter)
+      : [];
     const visibleExam = summaryFilter !== "ca" ? sortAssessmentsByCode(rawExam) : [];
     const caSubcategories = groupAssessmentsBySubcategory(visibleCA, natures.filter(nature => !nature.isExam).map(nature => nature.id));
     const caAssess = caSubcategories.flatMap(group => group.assessments);
@@ -3019,7 +3028,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         <div className="flex items-center gap-2">
           <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
             {(["all", "ca", "exam"] as const).map(f => (
-              <button key={f} onClick={() => setSummaryFilter(f)}
+              <button key={f} onClick={() => { setSummaryFilter(f); if (f !== "ca") setSummaryCAFilter("all"); }}
                 className={cn("px-3 py-1.5 font-semibold transition-colors", summaryFilter === f ? "bg-blue-500 text-white" : "bg-white text-slate-600 hover:bg-slate-50")}>
                 {f === "all" ? (lang === "zh" ? "全部" : "All") : f === "ca" ? (lang === "zh" ? "小測" : "CA") : (lang === "zh" ? "大考" : "Exam")}
               </button>
@@ -3031,6 +3040,24 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
           <Button size="sm" onClick={handleBulkExportPDF} className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white"><FileText className="w-4 h-4" />{lang === "zh" ? "全班 PDF 報告" : "All Students PDF"}</Button>
         </div>
       </div>
+
+      {summaryFilter !== "exam" && availableCANatures.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-blue-200 bg-blue-50/60 px-3 py-2.5">
+          <span className="inline-flex items-center gap-1 text-xs font-bold text-blue-900"><Filter className="h-3.5 w-3.5" />{lang === "zh" ? "CA 細項類別" : "CA category"}</span>
+          <button onClick={() => { setSummaryFilter("ca"); setSummaryCAFilter("all"); }} className={cn("rounded-full border px-2.5 py-1 text-xs font-bold transition-colors", summaryFilter === "ca" && summaryCAFilter === "all" ? "border-blue-400 bg-blue-600 text-white" : "border-blue-200 bg-white text-blue-700 hover:bg-blue-100")}>
+            {lang === "zh" ? "全部 CA" : "All CA"}
+          </button>
+          {availableCANatures.map(nature => {
+            const label = lang === "zh" && nature.nameCht ? nature.nameCht : nature.name;
+            const count = allAssessData.filter(assessment => assessment.natureId === nature.id).length;
+            const active = summaryFilter === "ca" && summaryCAFilter === nature.id;
+            return <button key={nature.id} onClick={() => { setSummaryFilter("ca"); setSummaryCAFilter(nature.id); }} className={cn("rounded-full border px-2.5 py-1 text-xs font-bold transition-colors", active ? "border-blue-500 bg-blue-600 text-white" : "border-blue-200 bg-white text-blue-700 hover:bg-blue-100")}>
+              {label} <span className={cn("font-mono", active ? "text-blue-100" : "text-blue-400")}>{count}</span>
+            </button>;
+          })}
+          <span className="ml-auto text-[10px] text-blue-700/75">{lang === "zh" ? "選擇類別後，表格、CSV、Excel 及列印/PDF 只顯示該類別的評估欄位；CA 總分仍按整個加權方案計算。" : "The table, CSV, Excel and Print/PDF show only the selected category; CA Total still follows the complete weighting scheme."}</span>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2">
         <span className="inline-flex items-center gap-1 text-xs font-bold text-slate-600"><Filter className="h-3.5 w-3.5" />{lang === "zh" ? "學生狀態篩選" : "Student status"}</span>
