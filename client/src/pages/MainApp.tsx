@@ -13,11 +13,13 @@ import {
   GraduationCap, Languages, Save, ChevronDown, ChevronRight, Plus, Trash2,
   BookOpen, Menu, X, Pencil, Check, Upload, FileEdit, Tag, Wand2, FileText,
   ArrowUp, ArrowDown, ChevronLeft, Printer, TrendingUp, TrendingDown, Minus,
-  Download, Copy, BarChart2, Tags, CalendarDays, ArrowRight, Cloud, ClipboardPaste, FileSpreadsheet, Filter,
+  Download, Copy, BarChart2, Tags, CalendarDays, ArrowRight, Cloud, ClipboardPaste, FileSpreadsheet, Filter, ShieldCheck, LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useData } from "@/contexts/DataContext";
 import { useI18n } from "@/contexts/I18nContext";
+import { useAuth } from "@/_core/hooks/useAuth";
+import AccountManagement from "@/pages/AccountManagement";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,7 +40,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.26.0";
+const APP_VERSION = "v1.27.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -216,7 +218,7 @@ function calcWeightedTotal(
 }
 
 // ─── Tab IDs ──────────────────────────────────────────────────────────────────
-type TabId = "students" | "grading" | "weakness" | "summary" | "chart" | "profile" | "settings" | "backup";
+type TabId = "students" | "grading" | "weakness" | "summary" | "chart" | "profile" | "settings" | "backup" | "accounts";
 
 interface TabDef {
   id: TabId;
@@ -234,6 +236,7 @@ const TABS: TabDef[] = [
   { id: "profile",   labelEn: "Student Profile",  labelZh: "學生個人檔案",      icon: User },
   { id: "settings",  labelEn: "Settings",         labelZh: "設定",              icon: Settings2 },
   { id: "backup",    labelEn: "Data Backup",      labelZh: "數據備份",          icon: Database },
+  { id: "accounts",  labelEn: "Teacher Accounts", labelZh: "教師帳戶",          icon: ShieldCheck },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -5421,6 +5424,7 @@ function ContextSelector({
 export default function MainApp() {
   const { lang, setLang } = useI18n();
   const { schoolYears } = useData();
+  const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<TabId>("students");
   const [yearId, setYearId] = useState("");
   const [subjectId, setSubjectId] = useState("");
@@ -5469,6 +5473,13 @@ export default function MainApp() {
     setMobileOpen(false); // close mobile drawer on tab select
   };
 
+  const isAdmin = user?.role === "admin";
+  const visibleTabs = isAdmin ? TABS : TABS.filter(tab => tab.id !== "accounts");
+
+  useEffect(() => {
+    if (!isAdmin && activeTab === "accounts") setActiveTab("students");
+  }, [activeTab, isAdmin]);
+
   const SidebarInner = ({ collapsed }: { collapsed: boolean }) => (
     <div className="flex flex-col h-full" style={{ background: "#1a2035" }}>
       {/* Logo row */}
@@ -5497,7 +5508,7 @@ export default function MainApp() {
 
       {/* Tab nav */}
       <nav className="flex-1 overflow-y-auto py-2 space-y-0.5 px-2">
-        {TABS.map(tab => {
+        {visibleTabs.map(tab => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
           const label = lang === "zh" ? tab.labelZh : tab.labelEn;
@@ -5603,6 +5614,18 @@ export default function MainApp() {
             </p>
           </div>
 
+          {user && (
+            <div className="hidden sm:flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
+              <div className="min-w-0 text-right leading-tight">
+                <p className="max-w-[110px] truncate text-xs font-semibold text-slate-700">{user.name || user.username || "Teacher"}</p>
+                <p className="text-[10px] text-slate-500">{isAdmin ? (lang === "zh" ? "管理員" : "Admin") : (lang === "zh" ? "教師" : "Teacher")}</p>
+              </div>
+              <button onClick={() => logout()} className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700" title={lang === "zh" ? "登出" : "Log out"}>
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
           {/* Breadcrumb — hide on very small screens */}
           {yearId && subjectId && classId && (
             <div className="hidden sm:flex items-center gap-1 text-xs text-slate-500 shrink-0">
@@ -5625,7 +5648,7 @@ export default function MainApp() {
         </div>
 
         {/* Mobile context bar - shown when sidebar is hidden and no class selected */}
-        {(!yearId || !subjectId || !classId) && activeTab !== "students" && activeTab !== "settings" && activeTab !== "backup" && (
+        {(!yearId || !subjectId || !classId) && activeTab !== "students" && activeTab !== "settings" && activeTab !== "backup" && activeTab !== "accounts" && (
           <div className="md:hidden px-3 py-2 bg-amber-50 border-b border-amber-200 flex items-center gap-2">
             <span className="text-xs text-amber-700 font-medium">{lang === "zh" ? "請先點擊左上角選擇學年、科目及班別" : "Tap ☰ to select School Year, Subject & Class"}</span>
             <button
@@ -5647,6 +5670,7 @@ export default function MainApp() {
           {activeTab === "profile" && <ProfileTab yearId={yearId} subjectId={subjectId} classId={classId} />}
           {activeTab === "settings" && <SettingsTab />}
           {activeTab === "backup" && <BackupTab />}
+          {activeTab === "accounts" && isAdmin && <AccountManagement />}
         </div>
       </main>
 

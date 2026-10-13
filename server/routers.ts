@@ -1,0 +1,62 @@
+import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
+import { TRPCError } from "@trpc/server";
+import { z } from "zod";
+import * as db from "./db";
+import { getSessionCookieOptions } from "./_core/cookies";
+import { sdk } from "./_core/sdk";
+import { systemRouter } from "./_core/systemRouter";
+import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
+
+const usernameSchema = z.string().trim().min(3, "帳戶名稱最少 3 個字元").max(64, "帳戶名稱最多 64 個字元").regex(/^[a-zA-Z0-9._-]+$/, "帳戶名稱只可包含英文字母、數字、句點、底線或連字號");
+const passwordSchema = z.string().min(10, "密碼最少 10 個字元").max(128, "密碼最多 128 個字元");
+
+function assertManagedUser(user: { role: string; active: boolean }) {
+  if (!user.active || (user.role !== "admin" && user.role !== "teacher")) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "此帳戶沒有教師系統存取權限" });
+  }
+}
+
+export const appRouter = router({
+  system: systemRouter,
+  auth: router({
+    me: publicProcedure.query(opts => opts.ctx.user),
+    login: publicProcedure.input(z.object({ username: usernameSchema, password: passwordSchema })).mutation(async ({ ctx, input }) => {
+      await db.ensureInitialAdmin();
+      const account = await db.authenticateLocalAccount(input.username, input.password);
+      if (!account) throw new TRPCError({ code: "UNAUTHORIZED", message: "帳戶名稱、密碼錯誤，或帳戶已停用" });
+      assertManagedUser(account);
+
+      const sessionToken = await sdk.createSessionToken(account.openId, {
+        name: account.name || account.username || "Teacher",
+        expiresInMs: ONE_YEAR_MS,
+      });
+      ctx.res.cookie(COOKIE_NAME, sessionToken, { ...getSessionCookieOptions(ctx.req), maxAge: ONE_YEAR_MS });
+      return { success: true } as const;
+    }),
+    logout: publicProcedure.mutation(({ ctx }) => {
+      const cookieOptions = getSessionCookieOptions(ctx.req);
+      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      return { success: true } as const;
+    }),
+    changePassword: protectedProcedure.input(z.object({ currentPassword: passwordSchema, nextPassword: passwordSchema })).mutation(async ({ ctx, input }) => {
+      const changed = await db.changeLocalPassword(ctx.user.id, input.currentPassword, input.nextPassword);
+      if (!changed) throw new TRPCError({ code: "UNAUTHORIZED", message: "現有密碼不正確" });
+      return { success: true } as const;
+    }),
+  }),
+  accounts: router({
+    list: adminProcedure.query(async () => db.listManagedAccounts()),
+    createTeacher: adminProcedure.input(z.object({ username: usernameSchema, password: passwordSchema, name: z.string().trim().min(1, "請輸入教師名稱").max(120) })).mutation(async ({ input }) => db.createTeacherAccount(input)),
+    resetPassword: adminProcedure.input(z.object({ accountId: z.number().int().positive(), password: passwordSchema })).mutation(async ({ input }) => {
+      await db.resetLocalAccountPassword(input.accountId, input.password);
+      return { success: true } as const;
+    }),
+    setActive: adminProcedure.input(z.object({ accountId: z.number().int().positive(), active: z.boolean() })).mutation(async ({ ctx, input }) => {
+      if (ctx.user.id === input.accountId && !input.active) throw new TRPCError({ code: "BAD_REQUEST", message: "不能停用目前登入的管理員帳戶" });
+      await db.setLocalAccountActive(input.accountId, input.active);
+      return { success: true } as const;
+    }),
+  }),
+});
+
+export type AppRouter = typeof appRouter;
