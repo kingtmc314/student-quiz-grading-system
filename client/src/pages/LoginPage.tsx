@@ -41,7 +41,7 @@ export default function LoginPage() {
         </header>
         <form onSubmit={handleSubmit} className="space-y-5 px-7 py-7">
           <div>
-            <h2 className="text-xl font-bold text-slate-900">教師登入</h2>
+            <h2 className="text-xl font-bold text-slate-900">系統登入</h2>
             <p className="mt-1 text-sm text-slate-500">使用管理員派發的帳戶名稱及密碼登入。</p>
           </div>
           {error && (
@@ -67,7 +67,7 @@ export default function LoginPage() {
           <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={login.isPending}>
             {login.isPending ? <><Loader2 className="h-4 w-4 animate-spin" />正在驗證…</> : "登入系統"}
           </Button>
-          <p className="rounded-lg bg-slate-50 px-3 py-2 text-center text-xs leading-relaxed text-slate-500">如遺失密碼，請聯絡系統管理員重設。密碼不會以明文方式儲存。</p>
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-center text-xs leading-relaxed text-slate-500">如遺失密碼，請聯絡系統管理員重設。暫用密碼須於 48 小時內更改；密碼不會以明文方式儲存。</p>
         </form>
       </section>
     </main>

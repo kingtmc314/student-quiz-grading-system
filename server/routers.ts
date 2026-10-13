@@ -9,10 +9,11 @@ import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_
 
 const usernameSchema = z.string().trim().min(3, "帳戶名稱最少 3 個字元").max(64, "帳戶名稱最多 64 個字元").regex(/^[a-zA-Z0-9._-]+$/, "帳戶名稱只可包含英文字母、數字、句點、底線或連字號");
 const passwordSchema = z.string().min(10, "密碼最少 10 個字元").max(128, "密碼最多 128 個字元");
+const accountNameSchema = z.string().trim().min(1, "請輸入名稱").max(120);
 
-function assertManagedUser(user: { role: string; active: boolean }) {
-  if (!user.active || (user.role !== "admin" && user.role !== "teacher")) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "此帳戶沒有教師系統存取權限" });
+function assertLocalAccountRole(user: { role: string; active: boolean }) {
+  if (!user.active || (user.role !== "admin" && user.role !== "teacher" && user.role !== "student")) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "此帳戶沒有系統存取權限" });
   }
 }
 
@@ -22,12 +23,15 @@ export const appRouter = router({
     me: publicProcedure.query(opts => opts.ctx.user),
     login: publicProcedure.input(z.object({ username: usernameSchema, password: passwordSchema })).mutation(async ({ ctx, input }) => {
       await db.ensureInitialAdmin();
-      const account = await db.authenticateLocalAccount(input.username, input.password);
-      if (!account) throw new TRPCError({ code: "UNAUTHORIZED", message: "帳戶名稱、密碼錯誤，或帳戶已停用" });
-      assertManagedUser(account);
+      const result = await db.authenticateLocalAccount(input.username, input.password);
+      if (result.status === "temporary_password_expired") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "暫用密碼已逾期，請聯絡管理員重設密碼。" });
+      }
+      if (result.status !== "authenticated") throw new TRPCError({ code: "UNAUTHORIZED", message: "帳戶名稱、密碼錯誤，或帳戶已停用" });
+      assertLocalAccountRole(result.account);
 
-      const sessionToken = await sdk.createSessionToken(account.openId, {
-        name: account.name || account.username || "Teacher",
+      const sessionToken = await sdk.createSessionToken(result.account.openId, {
+        name: result.account.name || result.account.username || "User",
         expiresInMs: ONE_YEAR_MS,
       });
       ctx.res.cookie(COOKIE_NAME, sessionToken, { ...getSessionCookieOptions(ctx.req), maxAge: ONE_YEAR_MS });
@@ -46,14 +50,13 @@ export const appRouter = router({
   }),
   accounts: router({
     list: adminProcedure.query(async () => db.listManagedAccounts()),
-    createTeacher: adminProcedure.input(z.object({ username: usernameSchema, password: passwordSchema, name: z.string().trim().min(1, "請輸入教師名稱").max(120) })).mutation(async ({ input }) => db.createTeacherAccount(input)),
-    resetPassword: adminProcedure.input(z.object({ accountId: z.number().int().positive(), password: passwordSchema })).mutation(async ({ input }) => {
-      await db.resetLocalAccountPassword(input.accountId, input.password);
-      return { success: true } as const;
-    }),
+    auditLog: adminProcedure.query(async () => db.listAccountAuditLogs(100)),
+    createTeacher: adminProcedure.input(z.object({ username: usernameSchema, password: passwordSchema, name: accountNameSchema })).mutation(async ({ ctx, input }) => db.createTeacherAccount({ ...input, actorUserId: ctx.user.id })),
+    createStudent: adminProcedure.input(z.object({ username: usernameSchema, password: passwordSchema, name: accountNameSchema, studentId: z.string().trim().min(1, "請選擇現有學生記錄").max(128) })).mutation(async ({ ctx, input }) => db.createStudentAccount({ ...input, actorUserId: ctx.user.id })),
+    resetPassword: adminProcedure.input(z.object({ accountId: z.number().int().positive(), password: passwordSchema })).mutation(async ({ ctx, input }) => db.resetLocalAccountPassword({ ...input, actorUserId: ctx.user.id })),
     setActive: adminProcedure.input(z.object({ accountId: z.number().int().positive(), active: z.boolean() })).mutation(async ({ ctx, input }) => {
       if (ctx.user.id === input.accountId && !input.active) throw new TRPCError({ code: "BAD_REQUEST", message: "不能停用目前登入的管理員帳戶" });
-      await db.setLocalAccountActive(input.accountId, input.active);
+      await db.setLocalAccountActive({ ...input, actorUserId: ctx.user.id });
       return { success: true } as const;
     }),
   }),

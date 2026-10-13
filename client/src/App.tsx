@@ -24,8 +24,12 @@ function ProtectedApp() {
 
   if (!user) return <LoginPage />;
 
+  if (user.role === "student") {
+    return <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4"><div className="max-w-md rounded-xl border border-teal-200 bg-white p-6 text-center shadow-sm"><h1 className="text-lg font-bold text-slate-900">學生帳戶已完成配對</h1><p className="mt-2 text-sm leading-relaxed text-slate-600">此帳戶已安全連結到學生記錄。學生專用成績頁正在準備後端資料列權限，啟用前不會顯示教師系統或其他學生資料。</p></div></div>;
+  }
+
   if (user.role !== "admin" && user.role !== "teacher") {
-    return <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4"><div className="max-w-md rounded-xl border border-amber-200 bg-white p-6 text-center shadow-sm"><h1 className="text-lg font-bold text-slate-900">帳戶尚未獲授權</h1><p className="mt-2 text-sm leading-relaxed text-slate-600">此帳戶暫未有教師系統權限。請聯絡系統管理員。</p></div></div>;
+    return <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4"><div className="max-w-md rounded-xl border border-amber-200 bg-white p-6 text-center shadow-sm"><h1 className="text-lg font-bold text-slate-900">帳戶尚未獲授權</h1><p className="mt-2 text-sm leading-relaxed text-slate-600">此帳戶暫未有系統權限。請聯絡系統管理員。</p></div></div>;
   }
 
   return <DataProvider>

@@ -40,7 +40,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.27.0";
+const APP_VERSION = "v1.28.0";
 
 type AssessmentDisplayItem = {
   id: string;
