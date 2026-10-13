@@ -57,7 +57,11 @@ export default function Students() {
       };
     }).filter(p => p.classNo && p.name);
     if (parsed.length === 0) { toast.error(t("parseError")); return; }
-    importStudents(yearId, subjectId, classId, parsed);
+    const wasReplaced = importStudents(yearId, subjectId, classId, parsed);
+    if (!wasReplaced) {
+      toast.error(lang === "zh" ? "此班已有成績紀錄，為保護資料，不能覆蓋學生名單。" : "This class has score records, so roster replacement is blocked to protect data.");
+      return;
+    }
     setImportText(""); setShowImport(false);
     toast.success(`${t("saved")} (${parsed.length})`);
   };

@@ -134,6 +134,8 @@ export interface FullAppState {
 
 const ASSIGNMENT_STATUS_STATE_KEY = 'assignmentSubmissionStatuses';
 type AssignmentStatusMap = Record<string, AssignmentSubmissionStatus>;
+const STUDENT_NUMBER_STATE_KEY = 'studentNumbers';
+type StudentNumberMap = Record<string, string>;
 
 function assignmentStatusKey(assessmentId: string, studentId: string) {
   return `${assessmentId}::${studentId}`;
@@ -227,6 +229,7 @@ export async function loadFullState(): Promise<FullAppState | null> {
     const dbAbsent = (absentRes.data ?? []) as { assessment_id: string; student_id: string }[];
     const appStatePayload = appStateRes.error ? {} : ((appStateRes.data?.data ?? {}) as Record<string, unknown>);
     const assignmentStatusMap = (appStatePayload[ASSIGNMENT_STATUS_STATE_KEY] ?? {}) as AssignmentStatusMap;
+    const studentNumberMap = (appStatePayload[STUDENT_NUMBER_STATE_KEY] ?? {}) as StudentNumberMap;
 
     // Build teachers
     const teachers: Teacher[] = dbTeachers.map(dbToTeacher);
@@ -332,7 +335,7 @@ export async function loadFullState(): Promise<FullAppState | null> {
     for (const cls of dbClasses) {
       const students: Student[] = dbStudents
         .filter(s => s.class_id === cls.id)
-        .map(s => ({ id: s.id, classNo: s.class_no, name: s.name, nameCht: s.name_cht }));
+        .map(s => ({ id: s.id, classNo: s.class_no, studentNumber: studentNumberMap[s.id] || undefined, name: s.name, nameCht: s.name_cht }));
       const assessments: Assessment[] = dbAsmts
         .filter(a => a.class_id === cls.id)
         .map(a => assessmentMap.get(a.id)!)
@@ -585,6 +588,33 @@ export async function saveStudents(students: Student[], classId: string) {
       { onConflict: 'id' }
     );
   if (error) console.error('saveStudents error:', error);
+}
+
+/**
+ * Persists school student numbers by immutable SQGS student-record ID.
+ * The live roster table predates this field, so this preserves roster rows,
+ * class membership and all score foreign keys while making the identifiers durable.
+ */
+export async function saveStudentNumbersDb(students: Pick<Student, 'id' | 'studentNumber'>[]) {
+  if (students.length === 0) return;
+  const { data: current, error: readError } = await supabase
+    .from('sqgs_app_state')
+    .select('data')
+    .eq('id', APP_STATE_ID)
+    .maybeSingle();
+  if (readError) throw new Error(`Cannot read student-number store: ${readError.message}`);
+
+  const payload = ((current?.data ?? {}) as Record<string, unknown>);
+  const studentNumbers: StudentNumberMap = { ...((payload[STUDENT_NUMBER_STATE_KEY] ?? {}) as StudentNumberMap) };
+  students.forEach(student => {
+    const value = student.studentNumber?.trim();
+    if (value) studentNumbers[student.id] = value;
+    else delete studentNumbers[student.id];
+  });
+  const { error: writeError } = await supabase
+    .from('sqgs_app_state')
+    .upsert({ id: APP_STATE_ID, data: { ...payload, [STUDENT_NUMBER_STATE_KEY]: studentNumbers } }, { onConflict: 'id' });
+  if (writeError) throw new Error(`Cannot save student numbers: ${writeError.message}`);
 }
 
 /** Delete a student */
@@ -868,6 +898,7 @@ export async function saveFullState(state: {
             cls.students.map(s => ({ id: s.id, class_id: cls.id, class_no: s.classNo, name: s.name, name_cht: s.nameCht })),
             { onConflict: 'id' }
           );
+          await saveStudentNumbersDb(cls.students);
         }
         for (const asmt of cls.assessments) {
           await saveAssessment(asmt, cls.id);

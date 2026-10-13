@@ -40,7 +40,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.28.0";
+const APP_VERSION = "v1.29.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -725,7 +725,7 @@ function StudentMgmtTab({
     addSchoolYear, deleteSchoolYear,
     addSubjectToYear, removeSubjectFromYear, getGlobalSubject,
     addClass, updateClass, deleteClass,
-    addStudent, updateStudent, deleteStudent, importStudents,
+    addStudent, updateStudent, updateStudentNumbers, deleteStudent, importStudents,
     getSchoolYear, getYearSubject, getClass,
     addSubject, updateSubject, deleteSubject,
     getNature, getWeightingScheme,
@@ -758,12 +758,16 @@ function StudentMgmtTab({
   // Student panel
   const [showAddStudent, setShowAddStudent] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showStudentNumberImport, setShowStudentNumberImport] = useState(false);
   const [importText, setImportText] = useState("");
+  const [studentNumberImportText, setStudentNumberImportText] = useState("");
   const [newStuClassNo, setNewStuClassNo] = useState("");
+  const [newStuStudentNumber, setNewStuStudentNumber] = useState("");
   const [newStuName, setNewStuName] = useState("");
   const [newStuNameCht, setNewStuNameCht] = useState("");
   const [editStuId, setEditStuId] = useState<string | null>(null);
   const [editStuClassNo, setEditStuClassNo] = useState("");
+  const [editStuStudentNumber, setEditStuStudentNumber] = useState("");
   const [editStuName, setEditStuName] = useState("");
   const [editStuNameCht, setEditStuNameCht] = useState("");
   const [deleteStuId, setDeleteStuId] = useState<string | null>(null);
@@ -831,8 +835,8 @@ function StudentMgmtTab({
 
   const handleAddStudent = () => {
     if (!yearId || !subjectId || !classId || !newStuClassNo.trim() || !newStuName.trim()) return;
-    addStudent(yearId, subjectId, classId, { classNo: newStuClassNo.trim(), name: newStuName.trim(), nameCht: newStuNameCht.trim() });
-    setNewStuClassNo(""); setNewStuName(""); setNewStuNameCht("");
+    addStudent(yearId, subjectId, classId, { classNo: newStuClassNo.trim(), studentNumber: newStuStudentNumber.trim() || undefined, name: newStuName.trim(), nameCht: newStuNameCht.trim() });
+    setNewStuClassNo(""); setNewStuStudentNumber(""); setNewStuName(""); setNewStuNameCht("");
     setShowAddStudent(false); toast.success(t("saved"));
   };
 
@@ -844,18 +848,79 @@ function StudentMgmtTab({
       return { classNo: parts[0] || "", name: parts[1] || "", nameCht: parts[2] || "" };
     }).filter(p => p.classNo && p.name);
     if (parsed.length === 0) { toast.error(t("parseError")); return; }
-    importStudents(yearId, subjectId, classId, parsed);
+    const wasReplaced = importStudents(yearId, subjectId, classId, parsed);
+    if (!wasReplaced) {
+      toast.error(lang === "zh" ? "此班已有成績／缺席紀錄，為保護資料，不能用「匯入名單」覆蓋。請使用「批量更新學生編號」。" : "This class already has score or absence records, so roster replacement is blocked. Use Bulk Student Numbers instead.");
+      return;
+    }
     setImportText(""); setShowImport(false);
     toast.success(`${t("saved")} (${parsed.length})`);
   };
 
-  const startEditStu = (id: string, classNo: string, name: string, nameCht: string) => {
-    setEditStuId(id); setEditStuClassNo(classNo); setEditStuName(name); setEditStuNameCht(nameCht);
+  const handleStudentNumberImport = () => {
+    if (!yearId || !subjectId || !classId || !cls) return;
+    const rows = studentNumberImportText.trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const updates: Array<{ studentId: string; studentNumber: string }> = [];
+    const seenClassNumbers = new Set<string>();
+    const seenStudentNumbers = new Set<string>();
+    const existingNumberOwners = new Map(cls.students
+      .filter(student => Boolean(student.studentNumber?.trim()))
+      .map(student => [student.studentNumber!.trim().toLocaleLowerCase(), student.id]));
+    const errors: string[] = [];
+
+    rows.forEach((line, index) => {
+      const parts = line.split(/\t|,/).map(part => part.trim());
+      const [classNo, studentNumber, suppliedName] = parts;
+      if (!classNo || !studentNumber) {
+        errors.push(lang === "zh" ? `第 ${index + 1} 行缺少班號或學生編號。` : `Line ${index + 1} is missing a class number or student number.`);
+        return;
+      }
+      const classKey = classNo.toLocaleLowerCase();
+      const numberKey = studentNumber.toLocaleLowerCase();
+      if (seenClassNumbers.has(classKey) || seenStudentNumbers.has(numberKey)) {
+        errors.push(lang === "zh" ? `第 ${index + 1} 行有重複的班號或學生編號。` : `Line ${index + 1} duplicates a class number or student number.`);
+        return;
+      }
+      const target = cls.students.find(student => student.classNo.toLocaleLowerCase() === classKey);
+      if (!target) {
+        errors.push(lang === "zh" ? `第 ${index + 1} 行的班號 ${classNo} 不在目前班別。` : `Class number ${classNo} on line ${index + 1} is not in this class.`);
+        return;
+      }
+      const existingOwner = existingNumberOwners.get(numberKey);
+      if (existingOwner && existingOwner !== target.id) {
+        errors.push(lang === "zh" ? `第 ${index + 1} 行的學生編號 ${studentNumber} 已屬於本班另一位學生。` : `Student number ${studentNumber} on line ${index + 1} already belongs to another student in this class.`);
+        return;
+      }
+      if (suppliedName && ![target.name, target.nameCht].map(normalizeStudentName).includes(normalizeStudentName(suppliedName))) {
+        errors.push(lang === "zh" ? `第 ${index + 1} 行姓名與班號 ${classNo} 的現有紀錄不相符。` : `The name on line ${index + 1} does not match the existing record for ${classNo}.`);
+        return;
+      }
+      seenClassNumbers.add(classKey);
+      seenStudentNumbers.add(numberKey);
+      updates.push({ studentId: target.id, studentNumber });
+    });
+
+    if (errors.length > 0) {
+      toast.error(errors[0]);
+      return;
+    }
+    if (updates.length === 0) {
+      toast.error(lang === "zh" ? "未找到可更新的學生編號。" : "No student numbers were found to update.");
+      return;
+    }
+    updateStudentNumbers(yearId, subjectId, classId, updates);
+    setStudentNumberImportText("");
+    setShowStudentNumberImport(false);
+    toast.success(lang === "zh" ? `已安全更新 ${updates.length} 位學生的編號；名單、成績及評估紀錄均已保留。` : `Safely updated ${updates.length} student number(s); roster, scores and assessments were preserved.`);
+  };
+
+  const startEditStu = (id: string, classNo: string, studentNumber: string | undefined, name: string, nameCht: string) => {
+    setEditStuId(id); setEditStuClassNo(classNo); setEditStuStudentNumber(studentNumber ?? ""); setEditStuName(name); setEditStuNameCht(nameCht);
   };
 
   const saveEditStu = () => {
     if (!yearId || !subjectId || !classId || !editStuId || !editStuClassNo.trim() || !editStuName.trim()) return;
-    updateStudent(yearId, subjectId, classId, editStuId, { classNo: editStuClassNo.trim(), name: editStuName.trim(), nameCht: editStuNameCht.trim() });
+    updateStudent(yearId, subjectId, classId, editStuId, { classNo: editStuClassNo.trim(), studentNumber: editStuStudentNumber.trim() || undefined, name: editStuName.trim(), nameCht: editStuNameCht.trim() });
     setEditStuId(null); toast.success(t("saved"));
   };
 
@@ -995,7 +1060,8 @@ function StudentMgmtTab({
           <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <p className="text-sm font-bold text-slate-700">{cls.name} — {sortedStudents.length} {t("students")}</p>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button size="sm" variant="outline" onClick={() => setShowStudentNumberImport(true)} className="gap-1 h-7 text-xs border-indigo-200 text-indigo-700 hover:bg-indigo-50"><FileSpreadsheet className="w-3.5 h-3.5" />{lang === "zh" ? "批量學生編號" : "Bulk Student Nos."}</Button>
                 <Button size="sm" variant="outline" onClick={() => setShowImport(true)} className="gap-1 h-7 text-xs"><Upload className="w-3.5 h-3.5" />{t("import")}</Button>
                 <Button size="sm" onClick={() => setShowAddStudent(true)} className="gap-1 h-7 text-xs"><Plus className="w-3.5 h-3.5" />{t("addStudent")}</Button>
               </div>
@@ -1062,6 +1128,7 @@ function StudentMgmtTab({
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50/50">
                   <th className="px-4 py-2 text-left w-20 text-xs font-bold uppercase tracking-wider text-slate-500">{t("classNo")}</th>
+                  <th className="px-4 py-2 text-left min-w-32 text-xs font-bold uppercase tracking-wider text-slate-500">{lang === "zh" ? "學生編號" : "Student No."}</th>
                   <th className="px-4 py-2 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{t("studentName")}</th>
                   <th className="px-4 py-2 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{t("nameCht")}</th>
                   <th className="px-4 py-2 text-right w-24 text-xs font-bold uppercase tracking-wider text-slate-500">{t("edit")}</th>
@@ -1069,12 +1136,13 @@ function StudentMgmtTab({
               </thead>
               <tbody>
                 {sortedStudents.length === 0 ? (
-                  <tr><td colSpan={4} className="px-4 py-12 text-center text-slate-400 text-sm">{t("noData")}</td></tr>
+                  <tr><td colSpan={5} className="px-4 py-12 text-center text-slate-400 text-sm">{t("noData")}</td></tr>
                 ) : sortedStudents.map(student => (
                   <tr key={student.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/50">
                     {editStuId === student.id ? (
                       <>
                         <td className="px-3 py-2"><Input value={editStuClassNo} onChange={e => setEditStuClassNo(e.target.value)} className="h-7 text-xs font-mono w-16" /></td>
+                        <td className="px-3 py-2"><Input value={editStuStudentNumber} onChange={e => setEditStuStudentNumber(e.target.value)} className="h-7 text-xs font-mono min-w-28" placeholder={lang === "zh" ? "學生編號" : "Student No."} /></td>
                         <td className="px-3 py-2"><Input value={editStuName} onChange={e => setEditStuName(e.target.value)} className="h-7 text-xs" /></td>
                         <td className="px-3 py-2"><Input value={editStuNameCht} onChange={e => setEditStuNameCht(e.target.value)} className="h-7 text-xs" onKeyDown={e => e.key === "Enter" && saveEditStu()} /></td>
                         <td className="px-3 py-2 text-right">
@@ -1087,11 +1155,12 @@ function StudentMgmtTab({
                     ) : (
                       <>
                         <td className="px-4 py-2.5 font-mono text-slate-600">{student.classNo}</td>
+                        <td className="px-4 py-2.5 font-mono text-indigo-700">{student.studentNumber || <span className="text-slate-300 italic text-xs">—</span>}</td>
                         <td className="px-4 py-2.5 text-slate-800 font-medium">{student.name}</td>
                         <td className="px-4 py-2.5 text-slate-600">{student.nameCht || <span className="text-slate-300 italic text-xs">—</span>}</td>
                         <td className="px-4 py-2.5 text-right">
                           <div className="flex justify-end gap-1">
-                            <button onClick={() => startEditStu(student.id, student.classNo, student.name, student.nameCht)} className="p-1.5 rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50"><Pencil className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => startEditStu(student.id, student.classNo, student.studentNumber, student.name, student.nameCht)} className="p-1.5 rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50"><Pencil className="w-3.5 h-3.5" /></button>
                             <button onClick={() => setDeleteStuId(student.id)} className="p-1.5 rounded text-slate-400 hover:text-red-500 hover:bg-red-50"><Trash2 className="w-3.5 h-3.5" /></button>
                           </div>
                         </td>
@@ -1215,6 +1284,7 @@ function StudentMgmtTab({
           <DialogHeader><DialogTitle>{t("addStudent")}</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
             <div><Label>{t("classNo")}</Label><Input value={newStuClassNo} onChange={e => setNewStuClassNo(e.target.value)} placeholder="01" autoFocus /></div>
+            <div><Label>{lang === "zh" ? "學生編號（建議填寫）" : "Student No. (recommended)"}</Label><Input value={newStuStudentNumber} onChange={e => setNewStuStudentNumber(e.target.value)} placeholder="e.g. 20260001" /></div>
             <div><Label>{t("studentName")} (English)</Label><Input value={newStuName} onChange={e => setNewStuName(e.target.value)} placeholder="Chan Tai Man" /></div>
             <div><Label>{t("nameCht")}</Label><Input value={newStuNameCht} onChange={e => setNewStuNameCht(e.target.value)} placeholder="陳大文" onKeyDown={e => e.key === "Enter" && handleAddStudent()} /></div>
           </div>
@@ -1227,9 +1297,25 @@ function StudentMgmtTab({
           <DialogHeader><DialogTitle>{t("import")} {t("students")}</DialogTitle></DialogHeader>
           <div className="py-2 space-y-2">
             <p className="text-xs text-slate-500">{t("importStudentsHint")}</p>
+            <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs leading-relaxed text-amber-800">{lang === "zh" ? "此功能只適用於尚未有成績、缺席或作業狀態的新班別。已有學生紀錄的班別會被系統阻止覆蓋，以保留成績。只補加學生編號請用「批量學生編號」。" : "Use this only for a new class without scores, absences or assignment statuses. Existing records are protected from roster replacement; use Bulk Student Nos. to add identifiers."}</p>
             <Textarea value={importText} onChange={e => setImportText(e.target.value)} placeholder={"01\tChan Tai Man\t陳大文\n02\tLee Siu Ming\t李小明"} rows={8} className="font-mono text-xs" />
           </div>
           <DialogFooter><Button variant="outline" onClick={() => setShowImport(false)}>{t("cancel")}</Button><Button onClick={handleImport} disabled={!importText.trim()}>{t("import")}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showStudentNumberImport} onOpenChange={setShowStudentNumberImport}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader><DialogTitle>{lang === "zh" ? "批量更新學生編號（保留所有成績）" : "Bulk Update Student Numbers (Preserves All Scores)"}</DialogTitle></DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs leading-relaxed text-emerald-800">
+              <p className="font-bold">{lang === "zh" ? "安全更新：只會更新已存在學生的「學生編號」。不會刪除、替換或重建學生，亦不會觸及成績、評估、缺席或作業紀錄。" : "Safe update: only the Student No. of existing students is changed. No students, scores, assessments, absences or assignment records are deleted, replaced or recreated."}</p>
+              <p className="mt-1">{lang === "zh" ? "格式：班號　學生編號　（可選）英文或中文姓名。系統會按班號找現有學生；若提供姓名，會額外核對，防止填錯。" : "Format: Class No. → Student No. → optional English or Chinese name. The existing student is found by class number; a supplied name is verified as an extra safeguard."}</p>
+            </div>
+            <Textarea value={studentNumberImportText} onChange={e => setStudentNumberImportText(e.target.value)} placeholder={"01\t20260001\tCHAN TAI MAN\n02\t20260002\t李小明"} rows={12} className="font-mono text-xs" />
+            <p className="text-xs text-slate-500">{lang === "zh" ? "可從 Excel 複製兩欄或三欄貼上；每個班號及學生編號在本次輸入中必須唯一。" : "Paste two or three columns directly from Excel; each class number and student number must be unique in this upload."}</p>
+          </div>
+          <DialogFooter><Button variant="outline" onClick={() => setShowStudentNumberImport(false)}>{t("cancel")}</Button><Button onClick={handleStudentNumberImport} disabled={!studentNumberImportText.trim()}>{lang === "zh" ? "安全更新編號" : "Safely Update Numbers"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -2006,8 +2092,9 @@ function GradingTab({
                   const parts = line.split(/\t/).map(p => p.trim());
                   if (parts.length < 1) continue;
                   const identifier = parts[0];
-                  // Try to match student by classNo first, then by name
-                  let matchedStudent = sortedStudents.find(s => s.classNo.toLowerCase() === identifier.toLowerCase());
+                  // Prefer the stable student number, then the class number and name.
+                  let matchedStudent = sortedStudents.find(s => s.studentNumber?.toLowerCase() === identifier.toLowerCase());
+                  if (!matchedStudent) matchedStudent = sortedStudents.find(s => s.classNo.toLowerCase() === identifier.toLowerCase());
                   if (!matchedStudent) matchedStudent = sortedStudents.find(s => s.name.toLowerCase() === identifier.toLowerCase() || (s.nameCht && s.nameCht === identifier));
                   // Check if ABS
                   const isAbs = parts.length === 2 && parts[1].toUpperCase() === "ABS";
@@ -3622,12 +3709,15 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const examAbsImpact = examTotal !== null && examTotalWithoutAbs !== null ? Math.max(0, Math.round((examTotalWithoutAbs - examTotal) * 10) / 10) : null;
 
   // Read-only student history for the currently selected subject across school years.
-  // A student may receive a new ID after class/year movement, so match exact
-  // normalized Chinese or English names in addition to the current ID. Subject
-  // scope prevents another subject's same-name student from being combined here.
+  // A school-issued student number is the preferred stable identity; existing data
+  // without a number continues to use the legacy current-ID and exact-name matching.
+  // Subject scope prevents another subject's same-name student from being combined here.
   const identityKeys = student ? [student.name, student.nameCht].map(normalizeStudentName).filter(Boolean) : [];
+  const studentNumberKey = student?.studentNumber?.trim().toLocaleLowerCase();
   const isSameStudent = (candidate: Student) => !!student && (
-    candidate.id === student.id || [candidate.name, candidate.nameCht]
+    candidate.id === student.id ||
+    (!!studentNumberKey && candidate.studentNumber?.trim().toLocaleLowerCase() === studentNumberKey) ||
+    [candidate.name, candidate.nameCht]
       .map(normalizeStudentName)
       .some(key => key.length > 0 && identityKeys.includes(key))
   );
@@ -4075,7 +4165,7 @@ function ProfileTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
               <div className="px-4 py-2.5 bg-blue-50/70 border-b border-blue-100 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p className="text-sm font-bold text-slate-800">{lang === "zh" ? `${subjectName} 表現（跨學年）` : `${subjectName} Performance (All Years)`}</p>
-                  <p className="text-xs text-slate-500">{lang === "zh" ? "以中英文姓名精確比對同一科目的既有歷史紀錄；不會合併其他科目同名學生的資料，分析只讀取資料。" : "History is exact-name matched within the current subject only; records from same-name students in other subjects are not combined, and no grades are changed."}</p>
+                  <p className="text-xs text-slate-500">{lang === "zh" ? "優先以學生編號配對同一科目的跨學年歷史；未有編號的舊紀錄才以中英文姓名精確比對。不會合併其他科目同名學生的資料，分析只讀取資料。" : "History is matched by Student No. first within the current subject. Legacy records without an identifier use exact-name matching; same-name students from other subjects are not combined, and no grades are changed."}</p>
                 </div>
                 <div className="flex items-center gap-3 text-xs"><span><b className="font-mono text-blue-700">{allYearsAvgPct !== null ? `${allYearsAvgPct}%` : "—"}</b> {lang === "zh" ? "歷年平均" : "all-years avg"}</span><span><b className="font-mono text-violet-700">{yearPerformance.length}</b> {lang === "zh" ? "學年" : "years"}</span><span><b className="font-mono text-emerald-700">{gradedAllYearsAssessments.length}</b> {lang === "zh" ? "已評分項" : "graded"}</span></div>
               </div>
@@ -5184,16 +5274,16 @@ function BackupTab() {
             // Section header
             rows.push("");
             rows.push(`=== ${esc(year.label)} | ${esc(subj?.name ?? ys.subjectId)} | ${esc(cls.name)} | ${esc(asmt.title)} ===`);
-            // Column headers: Class No, Name, then each mark item label
+            // Column headers: Class No, Student No, Name, then each mark item label
             const markItems = asmt.markSheet.filter(m => !m.isSection);
-            rows.push(["Class No", "Name", ...markItems.map(m => esc(m.label)), "Total", "Absent", "Assignment Submission Status"].join(","));
+            rows.push(["Class No", "Student No", "Name", ...markItems.map(m => esc(m.label)), "Total", "Absent", "Assignment Submission Status"].join(","));
             // One row per student
             for (const student of cls.students) {
               const scoreEntry = asmt.scores.find(s => s.studentId === student.id);
               const isAbsent = scoreEntry?.isAbsent ?? false;
               const assignmentStatus = scoreEntry?.assignmentStatus ?? "";
               if (isAbsent) {
-                rows.push([esc(student.classNo), esc(student.name), ...markItems.map(() => "ABS"), "ABS", "YES", ""].join(","));
+                rows.push([esc(student.classNo), esc(student.studentNumber), esc(student.name), ...markItems.map(() => "ABS"), "ABS", "YES", ""].join(","));
               } else {
                 const itemScores = markItems.map(m => {
                   const val = scoreEntry?.scores?.[m.id];
@@ -5204,7 +5294,7 @@ function BackupTab() {
                   return sum + (typeof val === "number" ? val : 0);
                 }, 0);
                 const hasAnyScore = markItems.some(m => scoreEntry?.scores?.[m.id] !== null && scoreEntry?.scores?.[m.id] !== undefined);
-                rows.push([esc(student.classNo), esc(student.name), ...itemScores, hasAnyScore ? esc(total) : assignmentStatus === "missing" ? "0" : "", "NO", esc(assignmentStatus)].join(","));
+                rows.push([esc(student.classNo), esc(student.studentNumber), esc(student.name), ...itemScores, hasAnyScore ? esc(total) : assignmentStatus === "missing" ? "0" : "", "NO", esc(assignmentStatus)].join(","));
               }
             }
           }

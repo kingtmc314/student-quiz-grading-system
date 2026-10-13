@@ -27,7 +27,7 @@ import {
   saveSchoolYear, deleteSchoolYearDb,
   ensureYearSubject, removeYearSubjectDb,
   saveClass, deleteClassDb,
-  saveStudent, deleteStudentDb, replaceClassStudents,
+  saveStudent, saveStudents, saveStudentNumbersDb, deleteStudentDb, replaceClassStudents,
   saveAssessment, deleteAssessmentDb,
   saveMarkSheet,
   upsertScoreDb, deleteScoreDb,
@@ -142,6 +142,8 @@ export interface Subject {
 export interface Student {
   id: string;
   classNo: string;
+  /** Stable school-issued identifier used to connect the same student across school years. */
+  studentNumber?: string;
   name: string;
   nameCht: string;
 }
@@ -245,8 +247,11 @@ interface DataContextType {
 
   addStudent: (yearId: string, subjectId: string, classId: string, s: Omit<Student, "id">) => void;
   updateStudent: (yearId: string, subjectId: string, classId: string, studentId: string, s: Partial<Student>) => void;
+  /** Updates existing student records only; it never replaces a class roster or changes scores. */
+  updateStudentNumbers: (yearId: string, subjectId: string, classId: string, updates: Array<{ studentId: string; studentNumber: string }>) => void;
   deleteStudent: (yearId: string, subjectId: string, classId: string, studentId: string) => void;
-  importStudents: (yearId: string, subjectId: string, classId: string, students: Omit<Student, "id">[]) => void;
+  /** Replaces a newly created roster only. Returns false when the class has student-linked records. */
+  importStudents: (yearId: string, subjectId: string, classId: string, students: Omit<Student, "id">[]) => boolean;
 
   addAssessment: (yearId: string, subjectId: string, classId: string, a: Omit<Assessment, "id" | "markSheet" | "scores">) => Assessment;
   updateAssessment: (yearId: string, subjectId: string, classId: string, assessmentId: string, a: Partial<Omit<Assessment, "markSheet" | "scores">>) => void;
@@ -778,6 +783,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       students: [...c.students, ns],
     }));
     saveStudent(ns, classId).catch(console.error);
+    saveStudentNumbersDb([ns]).catch(console.error);
   }, [mutateClass]);
 
   const updateStudent = useCallback((
@@ -787,10 +793,40 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     mutateClass(yearId, subjectId, classId, c => {
       const updated = c.students.map(st => st.id === studentId ? { ...st, ...s } : st);
       const updatedStudent = updated.find(st => st.id === studentId);
-      if (updatedStudent) saveStudent(updatedStudent, classId).catch(console.error);
+      if (updatedStudent) {
+        saveStudent(updatedStudent, classId).catch(console.error);
+        saveStudentNumbersDb([updatedStudent]).catch(console.error);
+      }
       return { ...c, students: updated };
     });
   }, [mutateClass]);
+
+  const updateStudentNumbers = useCallback((
+    yearId: string, subjectId: string, classId: string,
+    updates: Array<{ studentId: string; studentNumber: string }>,
+  ) => {
+    if (updates.length === 0) return;
+    const currentClass = schoolYears
+      .find(year => year.id === yearId)?.subjects
+      .find(yearSubject => yearSubject.subjectId === subjectId)?.classes
+      .find(classItem => classItem.id === classId);
+    if (!currentClass) return;
+
+    const numberByStudentId = new Map(updates.map(update => [update.studentId, update.studentNumber.trim()]));
+    const changedStudents = currentClass.students
+      .filter(student => numberByStudentId.has(student.id))
+      .map(student => ({ ...student, studentNumber: numberByStudentId.get(student.id) || undefined }));
+
+    mutateClass(yearId, subjectId, classId, current => ({
+      ...current,
+      students: current.students.map(student => numberByStudentId.has(student.id)
+        ? { ...student, studentNumber: numberByStudentId.get(student.id) || undefined }
+        : student),
+    }));
+    // Both writes are upserts against the existing student IDs: class membership and scores are untouched.
+    saveStudents(changedStudents, classId).catch(console.error);
+    saveStudentNumbersDb(changedStudents).catch(console.error);
+  }, [schoolYears, mutateClass]);
 
   const deleteStudent = useCallback((
     yearId: string, subjectId: string, classId: string, studentId: string
@@ -800,19 +836,32 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       students: c.students.filter(st => st.id !== studentId),
     }));
     deleteStudentDb(studentId).catch(console.error);
+    saveStudentNumbersDb([{ id: studentId, studentNumber: undefined }]).catch(console.error);
   }, [mutateClass]);
 
   const importStudents = useCallback((
     yearId: string, subjectId: string, classId: string,
     students: Omit<Student, "id">[]
   ) => {
+    const currentClass = schoolYears
+      .find(year => year.id === yearId)?.subjects
+      .find(yearSubject => yearSubject.subjectId === subjectId)?.classes
+      .find(classItem => classItem.id === classId);
+    // Replacing IDs after assessment activity would detach historical scores from the roster.
+    // This guard keeps all existing scores, absences and assignment statuses intact.
+    if (currentClass?.assessments.some(assessment => assessment.scores.length > 0)) {
+      console.warn('Roster replacement blocked: the class has student-linked assessment records.');
+      return false;
+    }
     const newStudents: Student[] = students.map(s => ({ ...s, id: nanoid() }));
     mutateClass(yearId, subjectId, classId, c => ({
       ...c,
       students: newStudents,
     }));
     replaceClassStudents(classId, newStudents).catch(console.error);
-  }, [mutateClass]);
+    saveStudentNumbersDb(newStudents).catch(console.error);
+    return true;
+  }, [schoolYears, mutateClass]);
 
   // ── Assessment CRUD ───────────────────────────────────────────────────────
 
@@ -989,7 +1038,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       addSchoolYear, deleteSchoolYear,
       addSubjectToYear, removeSubjectFromYear,
       addClass, updateClass, deleteClass,
-      addStudent, updateStudent, deleteStudent, importStudents,
+      addStudent, updateStudent, updateStudentNumbers, deleteStudent, importStudents,
       addAssessment, updateAssessment, deleteAssessment,
       updateMarkSheet,
       upsertScore, deleteScore,

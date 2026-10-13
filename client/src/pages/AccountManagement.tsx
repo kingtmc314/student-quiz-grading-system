@@ -97,8 +97,9 @@ export default function AccountManagement() {
       if (byId.has(student.id)) return;
       const subject = subjectById.get(yearSubject.subjectId);
       const displayName = student.nameCht?.trim() || student.name;
-      const label = `${displayName} · ${cls.name} · ${student.classNo || "—"}${subject ? ` · ${subject.code}` : ""}`;
-      byId.set(student.id, { id: student.id, label, searchText: `${label} ${student.name} ${student.nameCht}`.toLowerCase() });
+      const studentNumberLabel = student.studentNumber ? ` · #${student.studentNumber}` : "";
+      const label = `${displayName} · ${cls.name} · ${student.classNo || "—"}${studentNumberLabel}${subject ? ` · ${subject.code}` : ""}`;
+      byId.set(student.id, { id: student.id, label, searchText: `${label} ${student.studentNumber ?? ""} ${student.name} ${student.nameCht}`.toLowerCase() });
     }))));
     return Array.from(byId.values()).sort((a, b) => a.label.localeCompare(b.label, "zh-Hant"));
   }, [schoolYears, subjects]);
@@ -120,7 +121,7 @@ export default function AccountManagement() {
 
   return <div className="h-full overflow-auto bg-slate-50 p-4 md:p-6"><div className="mx-auto max-w-7xl space-y-5">
     <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm lg:flex-row lg:items-start lg:justify-between">
-      <div><div className="flex items-center gap-2"><ShieldCheck className="h-6 w-6 text-blue-600" /><h2 className="text-xl font-bold text-slate-900">帳戶、學生配對與權限</h2></div><p className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-600">管理員可建立教師帳戶，或從現有學生記錄配對一個學生帳戶。每筆學生記錄只可配對一次；不會重建、移動或修改任何既有學生與成績資料。</p></div>
+      <div><div className="flex items-center gap-2"><ShieldCheck className="h-6 w-6 text-blue-600" /><h2 className="text-xl font-bold text-slate-900">帳戶、學生配對與權限</h2></div><p className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-600">管理員可建立教師帳戶，或從現有學生記錄配對一個學生帳戶。候選名單會顯示及可搜尋學生編號；每筆學生記錄只可配對一次，不會重建、移動或修改任何既有學生與成績資料。</p></div>
       <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => { resetForm(); setCreateStudentOpen(true); }}><Link2 className="h-4 w-4" />配對學生帳戶</Button><Button onClick={() => { resetForm(); setCreateTeacherOpen(true); }}><Plus className="h-4 w-4" />新增教師帳戶</Button></div>
     </div>
 
