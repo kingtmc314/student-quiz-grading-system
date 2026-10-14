@@ -13,7 +13,7 @@ import { ENV } from "./_core/env";
 import { hashPassword, verifyPassword } from "./passwords";
 
 const TEMPORARY_PASSWORD_TTL_MS = 48 * 60 * 60 * 1000;
-/** Student starter passwords are always <student number>hoyu and must be changed on first login. */
+/** Student default passwords are always <student number>hoyu unless an administrator resets them. */
 export const STUDENT_DEFAULT_PASSWORD_SUFFIX = "hoyu";
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -204,7 +204,6 @@ export async function createStudentLoginByNumber(input: { studentNumber: string;
 
   const username = normalizeUsername(studentNumber);
   await ensureAvailableUsername(db, username);
-  const expiry = nextTemporaryPasswordExpiry();
   const passwordHash = await hashPassword(getStudentDefaultPassword(studentNumber));
   await db.insert(users).values({
     openId: `local:${username}`,
@@ -216,8 +215,8 @@ export async function createStudentLoginByNumber(input: { studentNumber: string;
     loginMethod: "local",
     role: "student",
     active: true,
-    mustChangePassword: true,
-    temporaryPasswordExpiresAt: expiry,
+    mustChangePassword: false,
+    temporaryPasswordExpiresAt: null,
     lastSignedIn: new Date(),
   });
   const created = await db.select().from(users).where(eq(users.studentNumber, studentNumber)).limit(1);
@@ -226,9 +225,84 @@ export async function createStudentLoginByNumber(input: { studentNumber: string;
     actorUserId: input.actorUserId,
     targetUserId: created[0].id,
     action: "student_login_created_by_number",
-    details: { username, studentNumber, temporaryPasswordExpiresAt: expiry.toISOString() },
+    details: { username, studentNumber, passwordPolicy: "default_password" },
   });
   return toSafeAccount(created[0]);
+}
+
+export type StudentLoginBatchCandidate = {
+  studentNumber: string;
+  name: string;
+  representativeStudentId?: string;
+};
+
+export type StudentLoginBatchResult = {
+  created: SafeAccount[];
+  skipped: Array<{ studentNumber: string; reason: string }>;
+};
+
+/**
+ * Creates only missing student-number login accounts. Existing records are
+ * skipped (never reset or overwritten), making repeated submissions safe.
+ */
+export async function createStudentLoginsBatch(input: {
+  candidates: StudentLoginBatchCandidate[];
+  actorUserId: number;
+}): Promise<StudentLoginBatchResult> {
+  const db = await requireDb();
+  const uniqueCandidates = new Map<string, StudentLoginBatchCandidate>();
+  const skipped: StudentLoginBatchResult["skipped"] = [];
+
+  for (const candidate of input.candidates) {
+    const studentNumber = normalizeStudentNumber(candidate.studentNumber);
+    const name = candidate.name.trim();
+    if (studentNumber.length < 6) {
+      skipped.push({ studentNumber: candidate.studentNumber.trim() || "—", reason: "學生編號少於 6 個字元" });
+      continue;
+    }
+    if (!name) {
+      skipped.push({ studentNumber, reason: "缺少學生姓名" });
+      continue;
+    }
+    if (uniqueCandidates.has(studentNumber)) {
+      skipped.push({ studentNumber, reason: "批次名單中重複；只保留第一筆" });
+      continue;
+    }
+    uniqueCandidates.set(studentNumber, { ...candidate, studentNumber, name });
+  }
+
+  const created: SafeAccount[] = [];
+  for (const candidate of Array.from(uniqueCandidates.values())) {
+    const existingByNumber = await db.select({ id: users.id }).from(users).where(eq(users.studentNumber, candidate.studentNumber)).limit(1);
+    if (existingByNumber.length > 0) {
+      skipped.push({ studentNumber: candidate.studentNumber, reason: "已有學生登入帳戶" });
+      continue;
+    }
+    const username = normalizeUsername(candidate.studentNumber);
+    const existingByUsername = await db.select({ id: users.id }).from(users).where(eq(users.username, username)).limit(1);
+    if (existingByUsername.length > 0) {
+      skipped.push({ studentNumber: candidate.studentNumber, reason: "登入帳戶名稱已被使用" });
+      continue;
+    }
+    created.push(await createStudentLoginByNumber({ ...candidate, actorUserId: input.actorUserId }));
+  }
+
+  return { created, skipped };
+}
+
+/** Removes only the local student login; academic data remains in Supabase untouched. */
+export async function deleteStudentLoginAccount(input: { accountId: number; actorUserId: number }): Promise<void> {
+  const db = await requireDb();
+  const rows = await db.select().from(users).where(eq(users.id, input.accountId)).limit(1);
+  const account = rows[0];
+  if (!account || account.role !== "student") throw new Error("Student login account was not found");
+  await recordAccountAudit({
+    actorUserId: input.actorUserId,
+    targetUserId: account.id,
+    action: "student_login_deleted",
+    details: { studentNumber: account.studentNumber ?? "", username: account.username ?? "", name: account.name ?? "", academicDataPreserved: true },
+  });
+  await db.delete(users).where(eq(users.id, account.id));
 }
 
 export async function resetStudentDefaultPassword(input: { accountId: number; actorUserId: number }): Promise<SafeAccount> {
@@ -236,19 +310,18 @@ export async function resetStudentDefaultPassword(input: { accountId: number; ac
   const target = await db.select().from(users).where(eq(users.id, input.accountId)).limit(1);
   const account = target[0];
   if (!account || account.role !== "student" || !account.studentNumber) throw new Error("This account is not a student-number login");
-  const expiry = nextTemporaryPasswordExpiry();
   await db.update(users).set({
     passwordHash: await hashPassword(getStudentDefaultPassword(account.studentNumber)),
-    mustChangePassword: true,
-    temporaryPasswordExpiresAt: expiry,
+    mustChangePassword: false,
+    temporaryPasswordExpiresAt: null,
   }).where(eq(users.id, account.id));
   await recordAccountAudit({
     actorUserId: input.actorUserId,
     targetUserId: account.id,
     action: "student_default_password_reset",
-    details: { studentNumber: account.studentNumber, temporaryPasswordExpiresAt: expiry.toISOString() },
+    details: { studentNumber: account.studentNumber, passwordPolicy: "default_password" },
   });
-  return toSafeAccount({ ...account, mustChangePassword: true, temporaryPasswordExpiresAt: expiry });
+  return toSafeAccount({ ...account, mustChangePassword: false, temporaryPasswordExpiresAt: null });
 }
 
 export async function resetLocalAccountPassword(input: { accountId: number; password: string; actorUserId: number }): Promise<SafeAccount> {

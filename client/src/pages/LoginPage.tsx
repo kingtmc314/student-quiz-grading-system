@@ -67,7 +67,7 @@ export default function LoginPage() {
           <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={login.isPending}>
             {login.isPending ? <><Loader2 className="h-4 w-4 animate-spin" />正在驗證…</> : "登入系統"}
           </Button>
-          <p className="rounded-lg bg-slate-50 px-3 py-2 text-center text-xs leading-relaxed text-slate-500">學生首次密碼為「學生編號 + hoyu」，須於 48 小時內更改。如遺失密碼，請聯絡系統管理員重設；密碼不會以明文方式儲存。</p>
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-center text-xs leading-relaxed text-slate-500">學生帳戶的預設密碼為「學生編號 + hoyu」。如遺失密碼，請聯絡系統管理員重設；系統不會以明文方式儲存密碼。</p>
         </form>
       </section>
     </main>

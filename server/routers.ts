@@ -6,6 +6,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { getOwnStudentProfile } from "./studentProfile";
 
 const usernameSchema = z.string().trim().min(3, "帳戶名稱最少 3 個字元").max(64, "帳戶名稱最多 64 個字元").regex(/^[a-zA-Z0-9._-]+$/, "帳戶名稱只可包含英文字母、數字、句點、底線或連字號");
 const passwordSchema = z.string().min(10, "密碼最少 10 個字元").max(128, "密碼最多 128 個字元");
@@ -67,7 +68,25 @@ export const appRouter = router({
       name: accountNameSchema,
       representativeStudentId: z.string().trim().max(128).optional(),
     })).mutation(async ({ ctx, input }) => db.createStudentLoginByNumber({ ...input, actorUserId: ctx.user.id })),
+    createBatch: adminProcedure.input(z.object({
+      candidates: z.array(z.object({
+        studentNumber: studentNumberSchema,
+        name: accountNameSchema,
+        representativeStudentId: z.string().trim().max(128).optional(),
+      })).min(1, "請至少選擇一名學生").max(500, "一次最多建立 500 個學生帳戶"),
+    })).mutation(async ({ ctx, input }) => db.createStudentLoginsBatch({ ...input, actorUserId: ctx.user.id })),
     resetDefaultPassword: adminProcedure.input(z.object({ accountId: z.number().int().positive() })).mutation(async ({ ctx, input }) => db.resetStudentDefaultPassword({ ...input, actorUserId: ctx.user.id })),
+    delete: adminProcedure.input(z.object({ accountId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      await db.deleteStudentLoginAccount({ ...input, actorUserId: ctx.user.id });
+      return { success: true } as const;
+    }),
+  }),
+  studentProfile: router({
+    mine: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "student") throw new TRPCError({ code: "FORBIDDEN", message: "此頁面只供學生帳戶使用" });
+      if (!ctx.user.studentNumber) throw new TRPCError({ code: "FORBIDDEN", message: "學生帳戶尚未連結學生編號，請聯絡老師" });
+      return getOwnStudentProfile({ studentNumber: ctx.user.studentNumber, name: ctx.user.name });
+    }),
   }),
 });
 
