@@ -41,7 +41,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.31.0";
+const APP_VERSION = "v1.32.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -5648,7 +5648,7 @@ export default function MainApp() {
   );
 
   return (
-    <div className="h-screen flex overflow-hidden bg-slate-100">
+    <div className="h-[100dvh] min-h-0 flex overflow-hidden bg-slate-100">
 
       {/* ── Mobile overlay ── */}
       {mobileOpen && (
@@ -5688,7 +5688,7 @@ export default function MainApp() {
       </aside>
 
       {/* ── Main content ── */}
-      <main className="flex-1 flex flex-col overflow-hidden bg-white min-w-0">
+      <main className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white min-w-0">
         {/* Top bar */}
         <div className="h-11 shrink-0 border-b border-slate-200 bg-white flex items-center px-3 gap-2">
           {/* Mobile hamburger */}
@@ -5753,7 +5753,7 @@ export default function MainApp() {
         )}
 
         {/* Tab content */}
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-hidden">
           {activeTab === "students" && <StudentMgmtTab {...contextProps} />}
           {activeTab === "grading" && <GradingTab yearId={yearId} subjectId={subjectId} classId={classId} />}
           {activeTab === "weakness" && <WeaknessTab yearId={yearId} subjectId={subjectId} classId={classId} />}
