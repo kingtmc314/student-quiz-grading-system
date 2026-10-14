@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { accountAuditLogs, users } from "../drizzle/schema";
+import { accountAuditLogs, studentTopicProgress, users } from "../drizzle/schema";
 import * as db from "./db";
 
 describe("student-number login and account audit", () => {
@@ -98,6 +98,38 @@ describe("student-number login and account audit", () => {
     } finally {
       const database = await db.getDb();
       for (const id of createdIds) {
+        await database?.delete(accountAuditLogs).where(eq(accountAuditLogs.targetUserId, id));
+        await database?.delete(users).where(eq(users.id, id));
+      }
+    }
+  }, 30_000);
+
+  it("stores revision markers only for the owning student and never changes academic accounts", async () => {
+    await db.ensureInitialAdmin();
+    const adminUsername = process.env.INITIAL_ADMIN_USERNAME?.trim().toLowerCase();
+    const admin = await db.getUserByOpenId(`local:${adminUsername}`);
+    expect(admin?.role).toBe("admin");
+
+    const suffix = randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
+    const createdIds: number[] = [];
+    try {
+      const first = await db.createStudentLoginByNumber({ studentNumber: `TOPIC${suffix}A`, name: "Topic Owner A", actorUserId: admin!.id });
+      const second = await db.createStudentLoginByNumber({ studentNumber: `TOPIC${suffix}B`, name: "Topic Owner B", actorUserId: admin!.id });
+      createdIds.push(first.id, second.id);
+      const topicKey = `subject-${suffix}::Algebra::Learning objective`;
+
+      await db.setStudentTopicProgress({ userId: first.id, topicKey, status: "review" });
+      expect(await db.listStudentTopicProgress(first.id)).toEqual([expect.objectContaining({ topicKey, status: "review" })]);
+      expect(await db.listStudentTopicProgress(second.id)).toEqual([]);
+
+      await db.setStudentTopicProgress({ userId: first.id, topicKey, status: "completed" });
+      expect(await db.listStudentTopicProgress(first.id)).toEqual([expect.objectContaining({ topicKey, status: "completed" })]);
+      await db.setStudentTopicProgress({ userId: first.id, topicKey, status: null });
+      expect(await db.listStudentTopicProgress(first.id)).toEqual([]);
+    } finally {
+      const database = await db.getDb();
+      for (const id of createdIds) {
+        await database?.delete(studentTopicProgress).where(eq(studentTopicProgress.userId, id));
         await database?.delete(accountAuditLogs).where(eq(accountAuditLogs.targetUserId, id));
         await database?.delete(users).where(eq(users.id, id));
       }

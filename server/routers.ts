@@ -87,6 +87,21 @@ export const appRouter = router({
       if (!ctx.user.studentNumber) throw new TRPCError({ code: "FORBIDDEN", message: "學生帳戶尚未連結學生編號，請聯絡老師" });
       return getOwnStudentProfile({ studentNumber: ctx.user.studentNumber, name: ctx.user.name });
     }),
+    topicProgress: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "student") throw new TRPCError({ code: "FORBIDDEN", message: "此頁面只供學生帳戶使用" });
+      return db.listStudentTopicProgress(ctx.user.id);
+    }),
+    setTopicProgress: protectedProcedure.input(z.object({
+      topicKey: z.string().trim().min(1).max(512),
+      status: z.enum(["completed", "review"]).nullable(),
+    })).mutation(async ({ ctx, input }) => {
+      if (ctx.user.role !== "student" || !ctx.user.studentNumber) throw new TRPCError({ code: "FORBIDDEN", message: "此功能只供已配對的學生帳戶使用" });
+      // Accept only a topic already visible in the student's own protected report.
+      const profile = await getOwnStudentProfile({ studentNumber: ctx.user.studentNumber, name: ctx.user.name });
+      if (!profile?.topics.some(topic => topic.id === input.topicKey)) throw new TRPCError({ code: "BAD_REQUEST", message: "只能標記自己報告內的課題" });
+      await db.setStudentTopicProgress({ userId: ctx.user.id, topicKey: input.topicKey, status: input.status });
+      return { success: true } as const;
+    }),
   }),
 });
 

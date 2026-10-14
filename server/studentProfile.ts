@@ -4,15 +4,19 @@ const SUPABASE_URL = "https://mwhppdxrfekyazcliqcc.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im13aHBwZHhyZmVreWF6Y2xpcWNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwODg2MzEsImV4cCI6MjA5NjY2NDYzMX0.zIhEw3ItdEqnq_PWeGA-Qwho27PsjKNP96vQuWVj_J8";
 const APP_STATE_ID = "default";
 const PAGE_SIZE = 1000;
+const MINIMUM_PEER_COUNT = 3;
 
 type LocalStudentAccount = { studentNumber: string | null; name: string | null };
 type AssessmentStatus = "complete" | "late" | "missing" | "absent" | "incomplete" | "not-entered";
+type ClassBenchmark = { averagePct: number; peerCount: number; rank: number | null; rankedCount: number };
 
 type StudentQuestion = {
   label: string;
   score: number | null;
   max: number;
   pct: number | null;
+  /** Aggregate-only comparison; no classmate identity or score is exposed. */
+  classBenchmark: { average: number; pct: number; peerCount: number } | null;
   topic: { level: string; learningUnit: string; objective: string } | null;
 };
 
@@ -33,6 +37,8 @@ type StudentAssessment = {
   total: number | null;
   max: number;
   pct: number | null;
+  /** Aggregate only: never exposes a classmate's identity or individual mark. */
+  classBenchmark: ClassBenchmark | null;
   questions: StudentQuestion[];
 };
 
@@ -46,6 +52,14 @@ type TopicSummary = {
   pct: number;
   itemCount: number;
   assessmentCount: number;
+};
+
+type CalculatedAssessment = {
+  status: AssessmentStatus;
+  total: number | null;
+  max: number;
+  pct: number | null;
+  scoreMap: Map<string, number | null>;
 };
 
 async function fetchAllRows<T>(client: any, table: string, select = "*"): Promise<T[]> {
@@ -62,11 +76,49 @@ async function fetchAllRows<T>(client: any, table: string, select = "*"): Promis
 }
 
 const asNumber = (value: unknown) => typeof value === "number" ? value : Number(value ?? 0);
+const numericScore = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
 const displayText = (zh: unknown, fallback: unknown) => String(zh || fallback || "未命名");
 
+function calculateAssessment(
+  assessmentId: string,
+  studentId: string,
+  questions: Record<string, unknown>[],
+  scoresByAssessmentStudent: Map<string, Record<string, unknown>[]>,
+  absentFlags: Set<string>,
+  assignmentStatuses: Record<string, "late" | "missing">,
+): CalculatedAssessment {
+  const scoreMap = new Map(
+    (scoresByAssessmentStudent.get(`${assessmentId}::${studentId}`) ?? [])
+      .map(score => [String(score.mark_item_id), numericScore(score.value)] as const),
+  );
+  const absent = absentFlags.has(`${assessmentId}::${studentId}`);
+  const assignmentStatus = assignmentStatuses[`${assessmentId}::${studentId}`];
+  const isComplete = questions.length > 0 && questions.every(question => scoreMap.get(String(question.id)) !== null && scoreMap.get(String(question.id)) !== undefined);
+  const max = questions.reduce((sum, question) => sum + asNumber(question.max_mark), 0);
+
+  if (absent) return { status: "absent", total: 0, max, pct: max > 0 ? 0 : null, scoreMap };
+  if (assignmentStatus === "missing") return { status: "missing", total: 0, max, pct: max > 0 ? 0 : null, scoreMap };
+  if (isComplete) {
+    const rawTotal = questions.reduce((sum, question) => sum + (scoreMap.get(String(question.id)) ?? 0), 0);
+    const total = assignmentStatus === "late" ? Math.round(rawTotal * 70) / 100 : rawTotal;
+    return { status: assignmentStatus === "late" ? "late" : "complete", total, max, pct: max > 0 ? Math.round((total / max) * 100) : null, scoreMap };
+  }
+  if (scoreMap.size > 0) return { status: "incomplete", total: null, max, pct: null, scoreMap };
+  return { status: "not-entered", total: null, max, pct: null, scoreMap };
+}
+
 /**
- * Builds a student-safe report from the SQGS data source. It deliberately only
- * emits score rows for the currently authenticated student's own identifiers.
+ * Builds a student-safe report from the SQGS data source. Score rows are only
+ * emitted for the authenticated student. Class comparison is aggregate-only,
+ * requires three or more other on-time completed peers, and never exposes
+ * classmates' names, marks, rank, or score distribution.
  */
 export async function getOwnStudentProfile(account: LocalStudentAccount) {
   const studentNumber = account.studentNumber?.trim().toLocaleUpperCase();
@@ -92,15 +144,11 @@ export async function getOwnStudentProfile(account: LocalStudentAccount) {
   const ownStudents = students.filter(row => String(studentNumberMap[String(row.id)] ?? "").trim().toLocaleUpperCase() === studentNumber);
   if (ownStudents.length === 0) return null;
 
-  const ownStudentIds = ownStudents.map(row => String(row.id));
+  const ownStudentIds = new Set(ownStudents.map(row => String(row.id)));
   const [scores, absentFlags] = await Promise.all([
     fetchAllRows<Record<string, unknown>>(supabase, "sqgs_scores"),
     fetchAllRows<Record<string, unknown>>(supabase, "sqgs_absent_flags"),
   ]);
-  const ownScores = scores.filter(row => ownStudentIds.includes(String(row.student_id)));
-  const ownAbsentFlags = new Set(absentFlags
-    .filter(row => ownStudentIds.includes(String(row.student_id)))
-    .map(row => `${row.assessment_id}::${row.student_id}`));
 
   const yearById = new Map(years.map(row => [String(row.id), String(row.label)]));
   const yearSubjectById = new Map(yearSubjects.map(row => [String(row.id), row]));
@@ -108,23 +156,28 @@ export async function getOwnStudentProfile(account: LocalStudentAccount) {
   const subjectById = new Map(subjects.map(row => [String(row.id), row]));
   const natureById = new Map(natures.map(row => [String(row.id), row]));
   const topicById = new Map(topics.map(row => [String(row.id), row]));
-  const ownStudentById = new Map(ownStudents.map(row => [String(row.id), row]));
+  const studentsByClassId = new Map<string, Record<string, unknown>[]>();
+  students.forEach(student => {
+    const classId = String(student.class_id);
+    studentsByClassId.set(classId, [...(studentsByClassId.get(classId) ?? []), student]);
+  });
   const marksByAssessment = new Map<string, Record<string, unknown>[]>();
   markItems.forEach(item => {
     const key = String(item.assessment_id);
     marksByAssessment.set(key, [...(marksByAssessment.get(key) ?? []), item]);
   });
   const scoresByAssessmentStudent = new Map<string, Record<string, unknown>[]>();
-  ownScores.forEach(score => {
+  scores.forEach(score => {
     const key = `${score.assessment_id}::${score.student_id}`;
     scoresByAssessmentStudent.set(key, [...(scoresByAssessmentStudent.get(key) ?? []), score]);
   });
+  const absentFlagSet = new Set(absentFlags.map(row => `${row.assessment_id}::${row.student_id}`));
 
   const reportAssessments: StudentAssessment[] = [];
   for (const assessment of assessments) {
     const classRow = classById.get(String(assessment.class_id));
     if (!classRow) continue;
-    const ownStudent = ownStudentById.get(String(ownStudents.find(student => String(student.class_id) === String(classRow.id))?.id ?? ""));
+    const ownStudent = (studentsByClassId.get(String(classRow.id)) ?? []).find(student => ownStudentIds.has(String(student.id)));
     if (!ownStudent) continue;
 
     const yearSubject = yearSubjectById.get(String(classRow.year_subject_id));
@@ -136,30 +189,47 @@ export async function getOwnStudentProfile(account: LocalStudentAccount) {
     const questions = (marksByAssessment.get(assessmentId) ?? [])
       .filter(item => !Boolean(item.is_section))
       .sort((a, b) => asNumber(a.sort_order) - asNumber(b.sort_order));
-    const scoreMap = new Map((scoresByAssessmentStudent.get(`${assessmentId}::${studentId}`) ?? []).map(score => [String(score.mark_item_id), score.value]));
-    const absent = ownAbsentFlags.has(`${assessmentId}::${studentId}`);
-    const assignmentStatus = assignmentStatuses[`${assessmentId}::${studentId}`];
-    const isComplete = questions.length > 0 && questions.every(question => typeof scoreMap.get(String(question.id)) === "number");
-    let status: AssessmentStatus = "not-entered";
-    let total: number | null = null;
-    if (absent) { status = "absent"; total = 0; }
-    else if (assignmentStatus === "missing") { status = "missing"; total = 0; }
-    else if (isComplete) {
-      const rawTotal = questions.reduce((sum, question) => sum + asNumber(scoreMap.get(String(question.id))), 0);
-      if (assignmentStatus === "late") { status = "late"; total = Math.round(rawTotal * 70) / 100; }
-      else { status = "complete"; total = rawTotal; }
-    } else if (scoreMap.size > 0) status = "incomplete";
-    const max = questions.reduce((sum, question) => sum + asNumber(question.max_mark), 0);
-    const pct = total !== null && max > 0 ? Math.round((total / max) * 100) : null;
+    const ownCalculated = calculateAssessment(assessmentId, studentId, questions, scoresByAssessmentStudent, absentFlagSet, assignmentStatuses);
+
+    // Comparison peers are anonymous, on-time and fully completed only.
+    const completedPeers = (studentsByClassId.get(String(classRow.id)) ?? [])
+      .filter(peer => String(peer.id) !== studentId)
+      .map(peer => ({ id: String(peer.id), result: calculateAssessment(assessmentId, String(peer.id), questions, scoresByAssessmentStudent, absentFlagSet, assignmentStatuses) }))
+      .filter(peer => peer.result.status === "complete" && peer.result.pct !== null);
+    const peerPcts = completedPeers.map(peer => peer.result.pct as number);
+    const classBenchmark: ClassBenchmark | null = peerPcts.length >= MINIMUM_PEER_COUNT
+      ? {
+          averagePct: Math.round(peerPcts.reduce((sum, pct) => sum + pct, 0) / peerPcts.length),
+          peerCount: peerPcts.length,
+          // Ranking is available only for this student's normal completed entry.
+          // Tied scores receive the same competition rank; peer identities are never returned.
+          rank: ownCalculated.status === "complete" && ownCalculated.pct !== null
+            ? 1 + peerPcts.filter(pct => pct > ownCalculated.pct!).length
+            : null,
+          rankedCount: peerPcts.length + 1,
+        }
+      : null;
+
     const questionDetails: StudentQuestion[] = questions.map(question => {
-      const score = status === "complete" || status === "late" ? asNumber(scoreMap.get(String(question.id))) : null;
+      const score = ownCalculated.status === "complete" || ownCalculated.status === "late" ? ownCalculated.scoreMap.get(String(question.id)) ?? null : null;
       const maxMark = asNumber(question.max_mark);
+      const peerQuestionScores = completedPeers
+        .map(peer => peer.result.scoreMap.get(String(question.id)))
+        .filter((value): value is number => value !== null && value !== undefined);
+      const classBenchmark = peerQuestionScores.length >= MINIMUM_PEER_COUNT && maxMark > 0
+        ? {
+            average: Math.round((peerQuestionScores.reduce((sum, value) => sum + value, 0) / peerQuestionScores.length) * 100) / 100,
+            pct: Math.round((peerQuestionScores.reduce((sum, value) => sum + value, 0) / peerQuestionScores.length / maxMark) * 100),
+            peerCount: peerQuestionScores.length,
+          }
+        : null;
       const topic = question.topic_id ? topicById.get(String(question.topic_id)) : undefined;
       return {
         label: String(question.label),
         score,
         max: maxMark,
         pct: score !== null && maxMark > 0 ? Math.round((score / maxMark) * 100) : null,
+        classBenchmark,
         topic: topic ? {
           level: String(topic.level || "未設定程度"),
           learningUnit: String(topic.learning_unit || "未分類單元"),
@@ -180,10 +250,11 @@ export async function getOwnStudentProfile(account: LocalStudentAccount) {
       term: String(assessment.term || ""),
       nature: displayText(nature?.name_cht, nature?.name),
       isExam: Boolean(nature?.is_exam),
-      status,
-      total,
-      max,
-      pct,
+      status: ownCalculated.status,
+      total: ownCalculated.total,
+      max: ownCalculated.max,
+      pct: ownCalculated.pct,
+      classBenchmark,
       questions: questionDetails,
     });
   }

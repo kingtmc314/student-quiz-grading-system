@@ -1,4 +1,4 @@
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   accountAuditLogs,
@@ -6,6 +6,8 @@ import {
   type InsertUser,
   type SafeAccount,
   type SafeAccountAuditLog,
+  studentTopicProgress,
+  type StudentTopicProgressStatus,
   type User,
   users,
 } from "../drizzle/schema";
@@ -363,6 +365,37 @@ export async function listAccountAuditLogs(limit = 100): Promise<SafeAccountAudi
     actorLabel: log.actorUserId ? accountLabel(accountById.get(log.actorUserId)) : "System",
     targetLabel: accountLabel(accountById.get(log.targetUserId)),
   }));
+}
+
+/** Returns only the authenticated student's own revision markers. */
+export async function listStudentTopicProgress(userId: number): Promise<Array<{ topicKey: string; status: StudentTopicProgressStatus; updatedAt: Date }>> {
+  const db = await requireDb();
+  const rows = await db.select({
+    topicKey: studentTopicProgress.topicKey,
+    status: studentTopicProgress.status,
+    updatedAt: studentTopicProgress.updatedAt,
+  }).from(studentTopicProgress)
+    .where(eq(studentTopicProgress.userId, userId))
+    .orderBy(desc(studentTopicProgress.updatedAt));
+  return rows as Array<{ topicKey: string; status: StudentTopicProgressStatus; updatedAt: Date }>;
+}
+
+/** Upserts or clears one student-owned revision marker without touching academic data. */
+export async function setStudentTopicProgress(input: { userId: number; topicKey: string; status: StudentTopicProgressStatus | null }): Promise<void> {
+  const db = await requireDb();
+  if (input.status === null) {
+    await db.delete(studentTopicProgress).where(and(
+      eq(studentTopicProgress.userId, input.userId),
+      eq(studentTopicProgress.topicKey, input.topicKey),
+    ));
+    return;
+  }
+  await db.insert(studentTopicProgress).values({
+    userId: input.userId,
+    topicKey: input.topicKey,
+    status: input.status,
+    updatedAt: new Date(),
+  }).onDuplicateKeyUpdate({ set: { status: input.status, updatedAt: new Date() } });
 }
 
 export function isManagedRole(role: User["role"]): role is AccountRole {

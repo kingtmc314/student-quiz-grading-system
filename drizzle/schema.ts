@@ -1,4 +1,4 @@
-import { boolean, index, int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { boolean, index, int, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Application accounts.
@@ -44,9 +44,27 @@ export const accountAuditLogs = mysqlTable("accountAuditLogs", {
   index("account_audit_created_idx").on(table.createdAt),
 ]);
 
+/**
+ * Student-owned revision markers. A marker records a learning intention only;
+ * it never changes marks, teacher analysis, or class statistics.
+ */
+export const studentTopicProgress = mysqlTable("studentTopicProgress", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  topicKey: varchar("topicKey", { length: 512 }).notNull(),
+  status: mysqlEnum("status", ["completed", "review"]).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, table => [
+  uniqueIndex("student_topic_progress_user_topic_uq").on(table.userId, table.topicKey),
+  index("student_topic_progress_user_updated_idx").on(table.userId, table.updatedAt),
+]);
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type AccountAuditLog = typeof accountAuditLogs.$inferSelect;
+export type StudentTopicProgress = typeof studentTopicProgress.$inferSelect;
+export type StudentTopicProgressStatus = "completed" | "review";
 export type AccountRole = "admin" | "teacher" | "student";
 
 export type SafeAccount = Pick<
