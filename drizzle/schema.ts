@@ -60,10 +60,30 @@ export const studentTopicProgress = mysqlTable("studentTopicProgress", {
   index("student_topic_progress_user_updated_idx").on(table.userId, table.updatedAt),
 ]);
 
+/**
+ * A student-owned record of generated report scopes. It stores no marks or PDF
+ * files, only the safe scope and assessment identifiers needed to reuse it.
+ */
+export const studentReportExports = mysqlTable("studentReportExports", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  subjectId: varchar("subjectId", { length: 128 }).notNull(),
+  subjectLabel: varchar("subjectLabel", { length: 240 }).notNull(),
+  schoolYear: varchar("schoolYear", { length: 64 }).notNull(),
+  term: varchar("term", { length: 64 }).notNull(),
+  language: varchar("language", { length: 8 }).notNull(),
+  assessmentIds: text("assessmentIds").notNull(),
+  assessmentCount: int("assessmentCount").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => [
+  index("student_report_exports_user_created_idx").on(table.userId, table.createdAt),
+]);
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type AccountAuditLog = typeof accountAuditLogs.$inferSelect;
 export type StudentTopicProgress = typeof studentTopicProgress.$inferSelect;
+export type StudentReportExport = typeof studentReportExports.$inferSelect;
 export type StudentTopicProgressStatus = "completed" | "review";
 export type AccountRole = "admin" | "teacher" | "student";
 

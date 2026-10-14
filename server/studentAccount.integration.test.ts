@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { accountAuditLogs, studentTopicProgress, users } from "../drizzle/schema";
+import { accountAuditLogs, studentReportExports, studentTopicProgress, users } from "../drizzle/schema";
 import * as db from "./db";
 
 describe("student-number login and account audit", () => {
@@ -130,6 +130,43 @@ describe("student-number login and account audit", () => {
       const database = await db.getDb();
       for (const id of createdIds) {
         await database?.delete(studentTopicProgress).where(eq(studentTopicProgress.userId, id));
+        await database?.delete(accountAuditLogs).where(eq(accountAuditLogs.targetUserId, id));
+        await database?.delete(users).where(eq(users.id, id));
+      }
+    }
+  }, 30_000);
+
+  it("stores reusable PDF scopes only for the student who opened the report", async () => {
+    await db.ensureInitialAdmin();
+    const adminUsername = process.env.INITIAL_ADMIN_USERNAME?.trim().toLowerCase();
+    const admin = await db.getUserByOpenId(`local:${adminUsername}`);
+    expect(admin?.role).toBe("admin");
+
+    const suffix = randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
+    const createdIds: number[] = [];
+    try {
+      const first = await db.createStudentLoginByNumber({ studentNumber: `EXPORT${suffix}A`, name: "Export Scope Owner", actorUserId: admin!.id });
+      const second = await db.createStudentLoginByNumber({ studentNumber: `EXPORT${suffix}B`, name: "Export Scope Other", actorUserId: admin!.id });
+      createdIds.push(first.id, second.id);
+
+      await db.recordStudentReportExport({
+        userId: first.id,
+        subjectId: "subject-test",
+        subjectLabel: "M0 · Core Mathematics",
+        schoolYear: "2026–27",
+        term: "Term 1",
+        language: "zh",
+        assessmentIds: ["assessment-1", "assessment-2", "assessment-1"],
+      });
+
+      const firstHistory = await db.listStudentReportExports(first.id);
+      expect(firstHistory).toHaveLength(1);
+      expect(firstHistory[0]).toMatchObject({ subjectId: "subject-test", schoolYear: "2026–27", term: "Term 1", language: "zh", assessmentCount: 2, assessmentIds: ["assessment-1", "assessment-2"] });
+      expect(await db.listStudentReportExports(second.id)).toEqual([]);
+    } finally {
+      const database = await db.getDb();
+      for (const id of createdIds) {
+        await database?.delete(studentReportExports).where(eq(studentReportExports.userId, id));
         await database?.delete(accountAuditLogs).where(eq(accountAuditLogs.targetUserId, id));
         await database?.delete(users).where(eq(users.id, id));
       }

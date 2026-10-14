@@ -6,6 +6,7 @@ import {
   type InsertUser,
   type SafeAccount,
   type SafeAccountAuditLog,
+  studentReportExports,
   studentTopicProgress,
   type StudentTopicProgressStatus,
   type User,
@@ -396,6 +397,63 @@ export async function setStudentTopicProgress(input: { userId: number; topicKey:
     status: input.status,
     updatedAt: new Date(),
   }).onDuplicateKeyUpdate({ set: { status: input.status, updatedAt: new Date() } });
+}
+
+export type StudentReportExportScope = {
+  userId: number;
+  subjectId: string;
+  subjectLabel: string;
+  schoolYear: string;
+  term: string;
+  language: "zh" | "en";
+  assessmentIds: string[];
+};
+
+/** Stores scope metadata only; the report is recalculated from current protected marks on every re-download. */
+export async function recordStudentReportExport(input: StudentReportExportScope): Promise<void> {
+  const db = await requireDb();
+  const assessmentIds = Array.from(new Set(input.assessmentIds.filter(Boolean))).slice(0, 500);
+  if (!assessmentIds.length) throw new Error("At least one assessment is required for a report export record");
+  await db.insert(studentReportExports).values({
+    userId: input.userId,
+    subjectId: input.subjectId,
+    subjectLabel: input.subjectLabel,
+    schoolYear: input.schoolYear,
+    term: input.term,
+    language: input.language,
+    assessmentIds: JSON.stringify(assessmentIds),
+    assessmentCount: assessmentIds.length,
+  });
+}
+
+/** Returns only the latest 20 export scopes for the authenticated student. */
+export async function listStudentReportExports(userId: number) {
+  const db = await requireDb();
+  const rows = await db.select({
+    id: studentReportExports.id,
+    subjectId: studentReportExports.subjectId,
+    subjectLabel: studentReportExports.subjectLabel,
+    schoolYear: studentReportExports.schoolYear,
+    term: studentReportExports.term,
+    language: studentReportExports.language,
+    assessmentIds: studentReportExports.assessmentIds,
+    assessmentCount: studentReportExports.assessmentCount,
+    createdAt: studentReportExports.createdAt,
+  }).from(studentReportExports)
+    .where(eq(studentReportExports.userId, userId))
+    .orderBy(desc(studentReportExports.createdAt), desc(studentReportExports.id))
+    .limit(20);
+
+  return rows.map(row => {
+    let assessmentIds: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(row.assessmentIds);
+      assessmentIds = Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string").slice(0, 500) : [];
+    } catch {
+      assessmentIds = [];
+    }
+    return { ...row, language: row.language === "en" ? "en" as const : "zh" as const, assessmentIds };
+  });
 }
 
 export function isManagedRole(role: User["role"]): role is AccountRole {

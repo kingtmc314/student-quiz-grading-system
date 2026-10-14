@@ -12,6 +12,13 @@ const usernameSchema = z.string().trim().min(3, "帳戶名稱最少 3 個字元"
 const passwordSchema = z.string().min(10, "密碼最少 10 個字元").max(128, "密碼最多 128 個字元");
 const accountNameSchema = z.string().trim().min(1, "請輸入名稱").max(120);
 const studentNumberSchema = z.string().trim().min(6, "學生編號最少 6 個字元，才能符合「學生編號 + hoyu」的預設密碼規則").max(64, "學生編號最多 64 個字元").regex(/^[a-zA-Z0-9._-]+$/, "學生編號只可包含英文字母、數字、句點、底線或連字號");
+const reportExportScopeSchema = z.object({
+  subjectId: z.string().trim().min(1).max(128),
+  schoolYear: z.string().trim().min(1).max(64),
+  term: z.string().trim().min(1).max(64),
+  language: z.enum(["zh", "en"]),
+  assessmentIds: z.array(z.string().trim().min(1).max(128)).min(1).max(500),
+});
 
 function assertLocalAccountRole(user: { role: string; active: boolean }) {
   if (!user.active || (user.role !== "admin" && user.role !== "teacher" && user.role !== "student")) {
@@ -100,6 +107,37 @@ export const appRouter = router({
       const profile = await getOwnStudentProfile({ studentNumber: ctx.user.studentNumber, name: ctx.user.name });
       if (!profile?.topics.some(topic => topic.id === input.topicKey)) throw new TRPCError({ code: "BAD_REQUEST", message: "只能標記自己報告內的課題" });
       await db.setStudentTopicProgress({ userId: ctx.user.id, topicKey: input.topicKey, status: input.status });
+      return { success: true } as const;
+    }),
+    reportHistory: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "student" || !ctx.user.studentNumber) throw new TRPCError({ code: "FORBIDDEN", message: "此功能只供已配對的學生帳戶使用" });
+      return db.listStudentReportExports(ctx.user.id);
+    }),
+    recordReportExport: protectedProcedure.input(reportExportScopeSchema).mutation(async ({ ctx, input }) => {
+      if (ctx.user.role !== "student" || !ctx.user.studentNumber) throw new TRPCError({ code: "FORBIDDEN", message: "此功能只供已配對的學生帳戶使用" });
+      const profile = await getOwnStudentProfile({ studentNumber: ctx.user.studentNumber, name: ctx.user.name });
+      const matchingSubject = input.subjectId === "all" ? undefined : profile?.subjects.find(subject => subject.subjectId === input.subjectId);
+      if (!profile || (input.subjectId !== "all" && !matchingSubject)) throw new TRPCError({ code: "BAD_REQUEST", message: "匯出範圍包含未授權的科目" });
+
+      const allowedAssessmentIds = new Set(profile.assessments
+        .filter(assessment => (input.subjectId === "all" || assessment.subjectId === input.subjectId)
+          && (input.schoolYear === "all" || assessment.yearLabel === input.schoolYear)
+          && (input.term === "all" || assessment.term === input.term))
+        .map(assessment => assessment.id));
+      const assessmentIds = Array.from(new Set(input.assessmentIds));
+      if (!assessmentIds.every(id => allowedAssessmentIds.has(id))) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "匯出範圍包含未授權的評估項目" });
+      }
+
+      await db.recordStudentReportExport({
+        userId: ctx.user.id,
+        subjectId: input.subjectId,
+        subjectLabel: matchingSubject ? `${matchingSubject.subjectCode} · ${matchingSubject.subjectName}` : "All subjects",
+        schoolYear: input.schoolYear,
+        term: input.term,
+        language: input.language,
+        assessmentIds,
+      });
       return { success: true } as const;
     }),
   }),
