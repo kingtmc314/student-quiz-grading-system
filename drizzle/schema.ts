@@ -11,8 +11,10 @@ export const users = mysqlTable("users", {
   openId: varchar("openId", { length: 128 }).notNull().unique(),
   username: varchar("username", { length: 64 }).unique(),
   passwordHash: varchar("passwordHash", { length: 255 }),
-  /** Immutable identifier of the existing SQGS student record selected by an administrator. */
+  /** Legacy anchor for accounts created before student-number-based management. */
   studentId: varchar("studentId", { length: 128 }).unique(),
+  /** One school-wide student identifier; one value maps to exactly one student account across all years. */
+  studentNumber: varchar("studentNumber", { length: 64 }).unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
@@ -49,7 +51,7 @@ export type AccountRole = "admin" | "teacher" | "student";
 
 export type SafeAccount = Pick<
   User,
-  "id" | "username" | "name" | "role" | "studentId" | "active" | "mustChangePassword" | "temporaryPasswordExpiresAt" | "createdAt" | "updatedAt" | "lastSignedIn"
+  "id" | "username" | "name" | "role" | "studentId" | "studentNumber" | "active" | "mustChangePassword" | "temporaryPasswordExpiresAt" | "createdAt" | "updatedAt" | "lastSignedIn"
 >;
 
 export type SafeAccountAuditLog = Pick<AccountAuditLog, "id" | "action" | "details" | "createdAt"> & {

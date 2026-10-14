@@ -35,14 +35,14 @@ export default function LoginPage() {
             </div>
             <div>
               <h1 className="text-lg font-bold">數學成績分析系統</h1>
-              <p className="mt-0.5 text-xs text-blue-200">Teacher Administration Portal</p>
+              <p className="mt-0.5 text-xs text-blue-200">Teacher & Student Login Portal</p>
             </div>
           </div>
         </header>
         <form onSubmit={handleSubmit} className="space-y-5 px-7 py-7">
           <div>
             <h2 className="text-xl font-bold text-slate-900">系統登入</h2>
-            <p className="mt-1 text-sm text-slate-500">使用管理員派發的帳戶名稱及密碼登入。</p>
+            <p className="mt-1 text-sm text-slate-500">教師使用管理員派發的帳戶；學生使用學生編號登入。</p>
           </div>
           {error && (
             <div role="alert" className="flex gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
@@ -54,7 +54,7 @@ export default function LoginPage() {
             <Label htmlFor="login-username">帳戶名稱 / Username</Label>
             <div className="relative">
               <UserRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input id="login-username" autoComplete="username" className="pl-9" value={username} onChange={event => setUsername(event.target.value)} placeholder="例如：maths.teacher" required disabled={login.isPending} />
+              <Input id="login-username" autoComplete="username" className="pl-9" value={username} onChange={event => setUsername(event.target.value)} placeholder="例如：maths.teacher 或 20260001" required disabled={login.isPending} />
             </div>
           </div>
           <div className="space-y-2">
@@ -67,7 +67,7 @@ export default function LoginPage() {
           <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={login.isPending}>
             {login.isPending ? <><Loader2 className="h-4 w-4 animate-spin" />正在驗證…</> : "登入系統"}
           </Button>
-          <p className="rounded-lg bg-slate-50 px-3 py-2 text-center text-xs leading-relaxed text-slate-500">如遺失密碼，請聯絡系統管理員重設。暫用密碼須於 48 小時內更改；密碼不會以明文方式儲存。</p>
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-center text-xs leading-relaxed text-slate-500">學生首次密碼為「學生編號 + hoyu」，須於 48 小時內更改。如遺失密碼，請聯絡系統管理員重設；密碼不會以明文方式儲存。</p>
         </form>
       </section>
     </main>

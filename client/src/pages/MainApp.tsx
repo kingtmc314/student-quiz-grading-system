@@ -20,6 +20,7 @@ import { useData } from "@/contexts/DataContext";
 import { useI18n } from "@/contexts/I18nContext";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AccountManagement from "@/pages/AccountManagement";
+import StudentLoginManagement from "@/pages/StudentLoginManagement";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,7 +41,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.29.0";
+const APP_VERSION = "v1.30.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -218,7 +219,7 @@ function calcWeightedTotal(
 }
 
 // ─── Tab IDs ──────────────────────────────────────────────────────────────────
-type TabId = "students" | "grading" | "weakness" | "summary" | "chart" | "profile" | "settings" | "backup" | "accounts";
+type TabId = "students" | "grading" | "weakness" | "summary" | "chart" | "profile" | "settings" | "backup" | "accounts" | "student-logins";
 
 interface TabDef {
   id: TabId;
@@ -236,7 +237,8 @@ const TABS: TabDef[] = [
   { id: "profile",   labelEn: "Student Profile",  labelZh: "學生個人檔案",      icon: User },
   { id: "settings",  labelEn: "Settings",         labelZh: "設定",              icon: Settings2 },
   { id: "backup",    labelEn: "Data Backup",      labelZh: "數據備份",          icon: Database },
-  { id: "accounts",  labelEn: "Teacher Accounts", labelZh: "教師帳戶",          icon: ShieldCheck },
+  { id: "accounts",  labelEn: "Teacher Accounts", labelZh: "教師帳戶及安全",    icon: ShieldCheck },
+  { id: "student-logins", labelEn: "Student Logins", labelZh: "學生登入管理",  icon: Users },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -5564,10 +5566,10 @@ export default function MainApp() {
   };
 
   const isAdmin = user?.role === "admin";
-  const visibleTabs = isAdmin ? TABS : TABS.filter(tab => tab.id !== "accounts");
+  const visibleTabs = isAdmin ? TABS : TABS.filter(tab => tab.id !== "accounts" && tab.id !== "student-logins");
 
   useEffect(() => {
-    if (!isAdmin && activeTab === "accounts") setActiveTab("students");
+    if (!isAdmin && (activeTab === "accounts" || activeTab === "student-logins")) setActiveTab("students");
   }, [activeTab, isAdmin]);
 
   const SidebarInner = ({ collapsed }: { collapsed: boolean }) => (
@@ -5738,7 +5740,7 @@ export default function MainApp() {
         </div>
 
         {/* Mobile context bar - shown when sidebar is hidden and no class selected */}
-        {(!yearId || !subjectId || !classId) && activeTab !== "students" && activeTab !== "settings" && activeTab !== "backup" && activeTab !== "accounts" && (
+        {(!yearId || !subjectId || !classId) && activeTab !== "students" && activeTab !== "settings" && activeTab !== "backup" && activeTab !== "accounts" && activeTab !== "student-logins" && (
           <div className="md:hidden px-3 py-2 bg-amber-50 border-b border-amber-200 flex items-center gap-2">
             <span className="text-xs text-amber-700 font-medium">{lang === "zh" ? "請先點擊左上角選擇學年、科目及班別" : "Tap ☰ to select School Year, Subject & Class"}</span>
             <button
@@ -5761,6 +5763,7 @@ export default function MainApp() {
           {activeTab === "settings" && <SettingsTab />}
           {activeTab === "backup" && <BackupTab />}
           {activeTab === "accounts" && isAdmin && <AccountManagement />}
+          {activeTab === "student-logins" && isAdmin && <StudentLoginManagement />}
         </div>
       </main>
 

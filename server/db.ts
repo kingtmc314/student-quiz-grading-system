@@ -1,4 +1,4 @@
-import { asc, desc, eq, isNull } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   accountAuditLogs,
@@ -13,6 +13,8 @@ import { ENV } from "./_core/env";
 import { hashPassword, verifyPassword } from "./passwords";
 
 const TEMPORARY_PASSWORD_TTL_MS = 48 * 60 * 60 * 1000;
+/** Student starter passwords are always <student number>hoyu and must be changed on first login. */
+export const STUDENT_DEFAULT_PASSWORD_SUFFIX = "hoyu";
 let _db: ReturnType<typeof drizzle> | null = null;
 
 export async function getDb() {
@@ -28,6 +30,8 @@ export async function getDb() {
 }
 
 const normalizeUsername = (username: string) => username.trim().toLowerCase();
+export const normalizeStudentNumber = (studentNumber: string) => studentNumber.trim().toLocaleUpperCase();
+export const getStudentDefaultPassword = (studentNumber: string) => `${normalizeStudentNumber(studentNumber)}${STUDENT_DEFAULT_PASSWORD_SUFFIX}`;
 const nextTemporaryPasswordExpiry = () => new Date(Date.now() + TEMPORARY_PASSWORD_TTL_MS);
 
 function toSafeAccount(account: User): SafeAccount {
@@ -88,7 +92,6 @@ export async function ensureInitialAdmin(): Promise<void> {
   const db = await requireDb();
   const existing = await db.select().from(users).where(eq(users.username, username)).limit(1);
   if (existing[0]) {
-    // Earlier initial administrators are safely brought under the temporary-password expiry rule.
     if (existing[0].mustChangePassword && !existing[0].temporaryPasswordExpiresAt) {
       await db.update(users).set({ temporaryPasswordExpiresAt: nextTemporaryPasswordExpiry() }).where(eq(users.id, existing[0].id));
     }
@@ -141,6 +144,12 @@ export async function listManagedAccounts(): Promise<SafeAccount[]> {
   return rows.map(toSafeAccount);
 }
 
+export async function listStudentLoginAccounts(): Promise<SafeAccount[]> {
+  const db = await requireDb();
+  const rows = await db.select().from(users).where(eq(users.role, "student")).orderBy(asc(users.studentNumber), asc(users.username));
+  return rows.map(toSafeAccount);
+}
+
 async function ensureAvailableUsername(db: Awaited<ReturnType<typeof requireDb>>, username: string) {
   const exists = await db.select({ id: users.id }).from(users).where(eq(users.username, username)).limit(1);
   if (exists.length > 0) throw new Error("Username is already in use");
@@ -162,6 +171,7 @@ export async function createTeacherAccount(input: { username: string; password: 
   return toSafeAccount(created[0]);
 }
 
+/** Legacy record-ID pairing, retained solely for existing integrations. New student accounts use createStudentLoginByNumber. */
 export async function createStudentAccount(input: { username: string; password: string; name: string; studentId: string; actorUserId: number }): Promise<SafeAccount> {
   const db = await requireDb();
   const username = normalizeUsername(input.username);
@@ -179,8 +189,66 @@ export async function createStudentAccount(input: { username: string; password: 
   });
   const created = await db.select().from(users).where(eq(users.username, username)).limit(1);
   if (!created[0]) throw new Error("Student account could not be created");
-  await recordAccountAudit({ actorUserId: input.actorUserId, targetUserId: created[0].id, action: "student_account_linked", details: { username, studentId, temporaryPasswordExpiresAt: expiry.toISOString() } });
+  await recordAccountAudit({ actorUserId: input.actorUserId, targetUserId: created[0].id, action: "legacy_student_record_linked", details: { username, studentId, temporaryPasswordExpiresAt: expiry.toISOString() } });
   return toSafeAccount(created[0]);
+}
+
+/** Creates one login identity for every occurrence of the same school-wide student number. */
+export async function createStudentLoginByNumber(input: { studentNumber: string; name: string; representativeStudentId?: string; actorUserId: number }): Promise<SafeAccount> {
+  const db = await requireDb();
+  const studentNumber = normalizeStudentNumber(input.studentNumber);
+  if (studentNumber.length < 6) throw new Error("Student number must contain at least 6 characters to use the default password rule");
+
+  const matchingAccount = await db.select({ id: users.id }).from(users).where(eq(users.studentNumber, studentNumber)).limit(1);
+  if (matchingAccount.length > 0) throw new Error("This student number already has a login account");
+
+  const username = normalizeUsername(studentNumber);
+  await ensureAvailableUsername(db, username);
+  const expiry = nextTemporaryPasswordExpiry();
+  const passwordHash = await hashPassword(getStudentDefaultPassword(studentNumber));
+  await db.insert(users).values({
+    openId: `local:${username}`,
+    username,
+    passwordHash,
+    studentId: input.representativeStudentId?.trim() || null,
+    studentNumber,
+    name: input.name.trim(),
+    loginMethod: "local",
+    role: "student",
+    active: true,
+    mustChangePassword: true,
+    temporaryPasswordExpiresAt: expiry,
+    lastSignedIn: new Date(),
+  });
+  const created = await db.select().from(users).where(eq(users.studentNumber, studentNumber)).limit(1);
+  if (!created[0]) throw new Error("Student login account could not be created");
+  await recordAccountAudit({
+    actorUserId: input.actorUserId,
+    targetUserId: created[0].id,
+    action: "student_login_created_by_number",
+    details: { username, studentNumber, temporaryPasswordExpiresAt: expiry.toISOString() },
+  });
+  return toSafeAccount(created[0]);
+}
+
+export async function resetStudentDefaultPassword(input: { accountId: number; actorUserId: number }): Promise<SafeAccount> {
+  const db = await requireDb();
+  const target = await db.select().from(users).where(eq(users.id, input.accountId)).limit(1);
+  const account = target[0];
+  if (!account || account.role !== "student" || !account.studentNumber) throw new Error("This account is not a student-number login");
+  const expiry = nextTemporaryPasswordExpiry();
+  await db.update(users).set({
+    passwordHash: await hashPassword(getStudentDefaultPassword(account.studentNumber)),
+    mustChangePassword: true,
+    temporaryPasswordExpiresAt: expiry,
+  }).where(eq(users.id, account.id));
+  await recordAccountAudit({
+    actorUserId: input.actorUserId,
+    targetUserId: account.id,
+    action: "student_default_password_reset",
+    details: { studentNumber: account.studentNumber, temporaryPasswordExpiresAt: expiry.toISOString() },
+  });
+  return toSafeAccount({ ...account, mustChangePassword: true, temporaryPasswordExpiresAt: expiry });
 }
 
 export async function resetLocalAccountPassword(input: { accountId: number; password: string; actorUserId: number }): Promise<SafeAccount> {

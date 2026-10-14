@@ -10,6 +10,7 @@ import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_
 const usernameSchema = z.string().trim().min(3, "帳戶名稱最少 3 個字元").max(64, "帳戶名稱最多 64 個字元").regex(/^[a-zA-Z0-9._-]+$/, "帳戶名稱只可包含英文字母、數字、句點、底線或連字號");
 const passwordSchema = z.string().min(10, "密碼最少 10 個字元").max(128, "密碼最多 128 個字元");
 const accountNameSchema = z.string().trim().min(1, "請輸入名稱").max(120);
+const studentNumberSchema = z.string().trim().min(6, "學生編號最少 6 個字元，才能符合「學生編號 + hoyu」的預設密碼規則").max(64, "學生編號最多 64 個字元").regex(/^[a-zA-Z0-9._-]+$/, "學生編號只可包含英文字母、數字、句點、底線或連字號");
 
 function assertLocalAccountRole(user: { role: string; active: boolean }) {
   if (!user.active || (user.role !== "admin" && user.role !== "teacher" && user.role !== "student")) {
@@ -52,13 +53,21 @@ export const appRouter = router({
     list: adminProcedure.query(async () => db.listManagedAccounts()),
     auditLog: adminProcedure.query(async () => db.listAccountAuditLogs(100)),
     createTeacher: adminProcedure.input(z.object({ username: usernameSchema, password: passwordSchema, name: accountNameSchema })).mutation(async ({ ctx, input }) => db.createTeacherAccount({ ...input, actorUserId: ctx.user.id })),
-    createStudent: adminProcedure.input(z.object({ username: usernameSchema, password: passwordSchema, name: accountNameSchema, studentId: z.string().trim().min(1, "請選擇現有學生記錄").max(128) })).mutation(async ({ ctx, input }) => db.createStudentAccount({ ...input, actorUserId: ctx.user.id })),
     resetPassword: adminProcedure.input(z.object({ accountId: z.number().int().positive(), password: passwordSchema })).mutation(async ({ ctx, input }) => db.resetLocalAccountPassword({ ...input, actorUserId: ctx.user.id })),
     setActive: adminProcedure.input(z.object({ accountId: z.number().int().positive(), active: z.boolean() })).mutation(async ({ ctx, input }) => {
       if (ctx.user.id === input.accountId && !input.active) throw new TRPCError({ code: "BAD_REQUEST", message: "不能停用目前登入的管理員帳戶" });
       await db.setLocalAccountActive({ ...input, actorUserId: ctx.user.id });
       return { success: true } as const;
     }),
+  }),
+  studentLogins: router({
+    list: adminProcedure.query(async () => db.listStudentLoginAccounts()),
+    createByNumber: adminProcedure.input(z.object({
+      studentNumber: studentNumberSchema,
+      name: accountNameSchema,
+      representativeStudentId: z.string().trim().max(128).optional(),
+    })).mutation(async ({ ctx, input }) => db.createStudentLoginByNumber({ ...input, actorUserId: ctx.user.id })),
+    resetDefaultPassword: adminProcedure.input(z.object({ accountId: z.number().int().positive() })).mutation(async ({ ctx, input }) => db.resetStudentDefaultPassword({ ...input, actorUserId: ctx.user.id })),
   }),
 });
 
