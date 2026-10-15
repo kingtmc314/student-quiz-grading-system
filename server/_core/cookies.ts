@@ -43,7 +43,10 @@ export function getSessionCookieOptions(
   return {
     httpOnly: true,
     path: "/",
-    sameSite: secure ? "none" : "lax",
+    // This is a first-party application. Lax is accepted more reliably by
+    // iPad Safari than a third-party-style SameSite=None cookie. Embedded
+    // browser contexts use the separate short-lived Authorization fallback.
+    sameSite: "lax",
     secure,
   };
 }

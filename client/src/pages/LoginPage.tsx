@@ -2,6 +2,7 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { COOKIE_NAME } from "@/const";
 import { AlertCircle, GraduationCap, Loader2, LockKeyhole, UserRound } from "lucide-react";
 import { FormEvent, useState } from "react";
 
@@ -11,9 +12,17 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const login = trpc.auth.login.useMutation({
-    onSuccess: async () => {
+    onSuccess: async result => {
       setError("");
       setPassword("");
+      // Safari on iPad and embedded browsers may block the HTTP-only session
+      // cookie. Keep the server-issued 12-hour fallback in this tab only; the
+      // regular HTTP-only cookie still takes precedence whenever it is present.
+      try {
+        sessionStorage.setItem("manus-cookie", `${COOKIE_NAME}=${result.fallbackSessionToken}`);
+      } catch {
+        // Normal first-party cookie login remains available when sessionStorage is blocked.
+      }
       await utils.auth.me.invalidate();
     },
     onError: err => setError(err.message || "登入失敗，請稍後再試。"),
@@ -54,14 +63,14 @@ export default function LoginPage() {
             <Label htmlFor="login-username">帳戶名稱 / Username</Label>
             <div className="relative">
               <UserRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input id="login-username" autoComplete="username" className="pl-9" value={username} onChange={event => setUsername(event.target.value)} placeholder="例如：maths.teacher 或 20260001" required disabled={login.isPending} />
+              <Input id="login-username" autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} className="pl-9" value={username} onChange={event => setUsername(event.target.value)} placeholder="例如：maths.teacher 或 20260001" required disabled={login.isPending} />
             </div>
           </div>
           <div className="space-y-2">
             <Label htmlFor="login-password">密碼 / Password</Label>
             <div className="relative">
               <LockKeyhole className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input id="login-password" type="password" autoComplete="current-password" className="pl-9" value={password} onChange={event => setPassword(event.target.value)} placeholder="至少 10 個字元" required disabled={login.isPending} />
+              <Input id="login-password" type="password" autoComplete="current-password" autoCapitalize="none" autoCorrect="off" spellCheck={false} className="pl-9" value={password} onChange={event => setPassword(event.target.value)} placeholder="至少 10 個字元" required disabled={login.isPending} />
             </div>
           </div>
           <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={login.isPending}>

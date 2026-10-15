@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
+import { sdk } from "./_core/sdk";
 import type { TrpcContext } from "./_core/context";
 
 /** Validates supplied bootstrap credentials through the actual tRPC login endpoint without logging secrets. */
@@ -21,10 +22,17 @@ describe("local administrator authentication", () => {
     };
 
     const caller = appRouter.createCaller(ctx);
-    await expect(caller.auth.login({ username: username!, password: password! })).resolves.toEqual({ success: true });
+    const result = await caller.auth.login({ username: username!, password: password! });
+    expect(result.success).toBe(true);
+    expect(result.fallbackSessionToken.length).toBeGreaterThan(40);
+    expect(await sdk.verifySession(result.fallbackSessionToken)).toMatchObject({ openId: `local:${username!.trim().toLowerCase()}` });
+    await expect(sdk.authenticateRequest({ headers: { authorization: `Bearer ${result.fallbackSessionToken}` } } as TrpcContext["req"])).resolves.toMatchObject({
+      openId: `local:${username!.trim().toLowerCase()}`,
+      role: "admin",
+    });
     expect(cookies).toHaveLength(1);
     expect(cookies[0]?.name).toBe("app_session_id");
     expect(cookies[0]?.value.length).toBeGreaterThan(40);
-    expect(cookies[0]?.options).toMatchObject({ httpOnly: true, secure: true, sameSite: "none" });
+    expect(cookies[0]?.options).toMatchObject({ httpOnly: true, secure: true, sameSite: "lax" });
   });
 });

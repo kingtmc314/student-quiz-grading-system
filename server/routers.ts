@@ -12,6 +12,7 @@ const usernameSchema = z.string().trim().min(3, "帳戶名稱最少 3 個字元"
 const passwordSchema = z.string().min(10, "密碼最少 10 個字元").max(128, "密碼最多 128 個字元");
 const accountNameSchema = z.string().trim().min(1, "請輸入名稱").max(120);
 const studentNumberSchema = z.string().trim().min(6, "學生編號最少 6 個字元，才能符合「學生編號 + hoyu」的預設密碼規則").max(64, "學生編號最多 64 個字元").regex(/^[a-zA-Z0-9._-]+$/, "學生編號只可包含英文字母、數字、句點、底線或連字號");
+const BROWSER_FALLBACK_SESSION_MS = 1000 * 60 * 60 * 12;
 const reportExportScopeSchema = z.object({
   subjectId: z.string().trim().min(1).max(128),
   schoolYear: z.string().trim().min(1).max(64),
@@ -43,8 +44,16 @@ export const appRouter = router({
         name: result.account.name || result.account.username || "User",
         expiresInMs: ONE_YEAR_MS,
       });
+      // iPad Safari, private browsing and embedded browsers can reject a
+      // third-party cookie. This short-lived token is used only in the current
+      // browser tab as an Authorization-header fallback; the primary session
+      // remains the HTTP-only cookie above.
+      const fallbackSessionToken = await sdk.createSessionToken(result.account.openId, {
+        name: result.account.name || result.account.username || "User",
+        expiresInMs: BROWSER_FALLBACK_SESSION_MS,
+      });
       ctx.res.cookie(COOKIE_NAME, sessionToken, { ...getSessionCookieOptions(ctx.req), maxAge: ONE_YEAR_MS });
-      return { success: true } as const;
+      return { success: true, fallbackSessionToken } as const;
     }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
