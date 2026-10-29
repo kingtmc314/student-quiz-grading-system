@@ -41,7 +41,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.33.0";
+const APP_VERSION = "v1.34.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -3013,6 +3013,52 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     win.print();
   };
 
+  const handleExportLeaderboardPDF = () => {
+    if (rankedOverallLeaderboard.length === 0) {
+      toast.error(lang === "zh" ? "暫未有可匯出的正常完成排行榜成績。" : "There are no eligible completed rankings to export yet.");
+      return;
+    }
+    const escapeHtml = (value: string | number) => String(value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    const subjectDisplayName = lang === "zh" && subject.nameCht ? subject.nameCht : subject.name;
+    const achievement = (rank: number) => rank === 1 ? (lang === "zh" ? "全班總冠軍" : "Class Champion") : rank === 2 ? (lang === "zh" ? "菁英榜眼" : "Elite Runner-up") : rank === 3 ? (lang === "zh" ? "卓越新星" : "Excellence Star") : (lang === "zh" ? "持續進步" : "Keep Growing");
+    const scope = summaryFilter === "exam" ? (lang === "zh" ? "已開始的大考評估" : "Started exam assessments")
+      : summaryFilter === "ca" && summaryCAFilter !== "all" ? `${lang === "zh" ? "已開始的 CA 類別：" : "Started CA category: "}${availableCANatures.find(nature => nature.id === summaryCAFilter)?.[lang === "zh" ? "nameCht" : "name"] || "—"}`
+      : summaryFilter === "ca" ? (lang === "zh" ? "已開始的全部 CA 評估" : "All started CA assessments")
+      : (lang === "zh" ? "所有已開始評估" : "All started assessments");
+    const average = Math.round(rankedOverallLeaderboard.reduce((sum, row) => sum + row.total, 0) / rankedOverallLeaderboard.length * 10) / 10;
+    const generatedAt = new Date().toLocaleString(lang === "zh" ? "zh-HK" : "en-GB");
+    const tableRows = rankedOverallLeaderboard.map((row, index) => `<tr class="${row.rank <= 3 ? "podium" : ""}"><td class="rank">${row.rank}</td><td>${escapeHtml(row.student.classNo)}</td><td class="name">${escapeHtml(row.name)}</td><td class="score">${row.total}%</td><td class="ca">${row.ca === null ? "—" : `${row.ca}%`}</td><td class="exam">${row.exam === null ? "—" : `${row.exam}%`}</td><td><span class="badge badge-${Math.min(row.rank, 4)}">${escapeHtml(achievement(row.rank))}</span></td></tr>`).join("");
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) { toast.error(lang === "zh" ? "無法開啟報告視窗，請允許彈出視窗。" : "Unable to open the report window. Please allow popups."); return; }
+    printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(cls.name)} — ${lang === "zh" ? "全班排行榜" : "Class Leaderboard"}</title><style>
+      *{box-sizing:border-box} body{margin:0;background:#f1f5f9;color:#172554;font-family:Arial,'Microsoft JhengHei','PingFang TC',sans-serif}.report{width:210mm;min-height:297mm;margin:0 auto;padding:15mm 14mm;background:#fff}.top{padding:14px 18px;border-radius:12px;background:linear-gradient(135deg,#312e81,#4f46e5 60%,#f59e0b);color:#fff}.eyebrow{font-size:10px;letter-spacing:.12em;font-weight:700;opacity:.82}.title{margin:4px 0 0;font-size:25px;line-height:1.2}.meta{margin-top:8px;font-size:11px;opacity:.93}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}.card{border:1px solid #ddd6fe;border-radius:9px;padding:9px 10px;background:#fafaff}.label{font-size:9px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.04em}.value{margin-top:3px;font-size:19px;font-weight:800;color:#312e81}.note{margin:0 0 12px;border-left:4px solid #8b5cf6;padding:8px 10px;background:#faf5ff;color:#4c1d95;font-size:10px;line-height:1.55}.heading{margin:17px 0 8px;padding-left:9px;border-left:4px solid #4f46e5;font-size:14px}.table{width:100%;border-collapse:collapse;font-size:10px}.table th{padding:7px 8px;background:#312e81;color:#fff;text-align:left}.table th.score,.table th.ca,.table th.exam{text-align:right}.table td{padding:7px 8px;border-bottom:1px solid #e2e8f0}.table tr:nth-child(even) td{background:#f8fafc}.table tr.podium td{background:#fffbeb}.rank{font-size:14px;font-weight:900;color:#4338ca;text-align:center}.name{font-weight:700;color:#1e293b}.score,.ca,.exam{text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800}.score{color:#047857}.ca{color:#1d4ed8}.exam{color:#dc2626}.badge{display:inline-block;border-radius:999px;padding:3px 6px;font-size:9px;font-weight:700}.badge-1{background:#fef3c7;color:#92400e}.badge-2,.badge-3{background:#ede9fe;color:#5b21b6}.badge-4{background:#f1f5f9;color:#475569}.footer{margin-top:16px;padding-top:8px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;gap:12px;color:#94a3b8;font-size:9px}@media print{@page{size:A4;margin:0}body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}.report{width:210mm;min-height:297mm;margin:0;padding:15mm 14mm}}
+    </style></head><body><main class="report"><header class="top"><div class="eyebrow">${lang === "zh" ? "數學成績分析系統 · 教師報告" : "MATHS PERFORMANCE ANALYTICS · TEACHER REPORT"}</div><h1 class="title">${lang === "zh" ? "全班整體加權成績排行榜" : "Class Overall Weighted Leaderboard"}</h1><p class="meta">${escapeHtml(year.label)} · ${escapeHtml(subjectDisplayName)} · ${escapeHtml(cls.name)}<br>${escapeHtml(scope)}</p></header><section class="summary"><div class="card"><div class="label">${lang === "zh" ? "已排名學生" : "Ranked students"}</div><div class="value">${rankedOverallLeaderboard.length}</div></div><div class="card"><div class="label">${lang === "zh" ? "排行榜平均" : "Leaderboard average"}</div><div class="value">${average}%</div></div><div class="card"><div class="label">${lang === "zh" ? "加權方案" : "Weighting scheme"}</div><div class="value" style="font-size:14px">${escapeHtml(scheme?.label || (lang === "zh" ? "未設定" : "Not configured"))}</div></div></section><p class="note">${lang === "zh" ? "資格說明：只列入所選範圍內所有已開始評估均正常完成的學生。ABS、遲交、欠交及未完成紀錄不會納入排行榜。" : "Eligibility: only students with normal completed results in every started assessment within the selected scope are ranked. ABS, late, missing and incomplete records are excluded."}</p><h2 class="heading">${lang === "zh" ? "排名結果" : "Ranking Results"}</h2><table class="table"><thead><tr><th>${lang === "zh" ? "名次" : "Rank"}</th><th>#</th><th>${lang === "zh" ? "學生姓名" : "Student"}</th><th class="score">${lang === "zh" ? "整體加權" : "Overall"}</th><th class="ca">CA</th><th class="exam">${lang === "zh" ? "大考" : "Exam"}</th><th>${lang === "zh" ? "成就" : "Achievement"}</th></tr></thead><tbody>${tableRows}</tbody></table><footer class="footer"><span>${escapeHtml(year.label)} · ${escapeHtml(cls.name)}</span><span>${lang === "zh" ? "生成時間" : "Generated"}: ${escapeHtml(generatedAt)}</span></footer></main><script>window.onload=function(){window.print()}<\/script></body></html>`);
+    printWindow.document.close();
+  };
+
+  const handleExportLeaderboardCertificates = () => {
+    const recipients = rankedOverallLeaderboard.filter(row => row.rank <= 3);
+    if (recipients.length === 0) { toast.error(lang === "zh" ? "暫未有可產生獎狀的正常完成排行榜成績。" : "There are no eligible completed rankings to certificate yet."); return; }
+    const escapeHtml = (value: string | number) => String(value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    const subjectDisplayName = lang === "zh" && subject.nameCht ? subject.nameCht : subject.name;
+    const award = (rank: number) => rank === 1 ? (lang === "zh" ? "全班總冠軍" : "Class Champion") : rank === 2 ? (lang === "zh" ? "菁英榜眼" : "Elite Runner-up") : (lang === "zh" ? "卓越新星" : "Excellence Star");
+    const scope = summaryFilter === "exam" ? (lang === "zh" ? "已開始的大考評估" : "Started exam assessments")
+      : summaryFilter === "ca" ? (lang === "zh" ? "已開始的平時分評估" : "Started CA assessments")
+      : (lang === "zh" ? "所有已開始評估" : "All started assessments");
+    const date = new Date().toLocaleDateString(lang === "zh" ? "zh-HK" : "en-GB", { year: "numeric", month: "long", day: "numeric" });
+    const certificates = recipients.map(row => `<section class="certificate"><div class="ornament top-left">✦</div><div class="ornament top-right">✦</div><div class="inner"><div class="kicker">${lang === "zh" ? "數學成績分析系統" : "MATHS PERFORMANCE ANALYTICS"}</div><h1>${lang === "zh" ? "班級優異成績獎狀" : "Certificate of Achievement"}</h1><p class="presented">${lang === "zh" ? "謹此頒發予" : "This certificate is proudly presented to"}</p><h2>${escapeHtml(row.name)}</h2><p class="classno">${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(row.student.classNo)}</p><p class="citation">${lang === "zh" ? `在 ${escapeHtml(year.label)} ${escapeHtml(subjectDisplayName)} ${escapeHtml(cls.name)} 的整體加權成績中，榮獲` : `for achieving outstanding performance in the overall weighted results for ${escapeHtml(year.label)} ${escapeHtml(subjectDisplayName)} ${escapeHtml(cls.name)}, earning the award of`}</p><div class="award">${escapeHtml(award(row.rank))}</div><p class="result">${lang === "zh" ? `全班第 ${row.rank} 名 · 整體加權 ${row.total}%` : `Rank ${row.rank} in class · Overall weighted result ${row.total}%`}</p><p class="scope">${escapeHtml(scope)} · ${escapeHtml(scheme?.label || (lang === "zh" ? "現行加權方案" : "Current weighting scheme"))}</p><div class="signatures"><div><span></span><p>${lang === "zh" ? "科任老師" : "Subject Teacher"}</p></div><div><span></span><p>${lang === "zh" ? "日期" : "Date"}: ${escapeHtml(date)}</p></div></div></div></section>`).join("");
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) { toast.error(lang === "zh" ? "無法開啟獎狀視窗，請允許彈出視窗。" : "Unable to open the certificate window. Please allow popups."); return; }
+    printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(cls.name)} — ${lang === "zh" ? "班級獎狀" : "Class Certificates"}</title><style>
+      *{box-sizing:border-box}body{margin:0;background:#e2e8f0;font-family:Arial,'Microsoft JhengHei','PingFang TC',sans-serif;color:#172554}.certificate{width:297mm;height:210mm;position:relative;page-break-after:always;padding:12mm;background:linear-gradient(135deg,#312e81,#4f46e5 48%,#f59e0b);overflow:hidden}.certificate:last-child{page-break-after:auto}.certificate:before,.certificate:after{content:"";position:absolute;border:2px solid rgba(255,255,255,.6);inset:7mm}.certificate:after{inset:11mm;border-color:rgba(254,243,199,.85)}.inner{position:relative;z-index:1;height:100%;padding:19mm 26mm;text-align:center;background:#fffdf5;border:3px solid #fbbf24;box-shadow:inset 0 0 0 7px #fff7d6}.kicker{font-size:11px;letter-spacing:.18em;font-weight:800;color:#4338ca}.inner h1{margin:7mm 0 4mm;font-size:31px;color:#312e81;letter-spacing:.06em}.presented{margin:0;color:#64748b;font-size:13px}.inner h2{margin:5mm 0 1mm;font-size:34px;color:#1e3a8a}.classno{margin:0;color:#64748b;font-size:12px}.citation{max-width:190mm;margin:7mm auto 3mm;font-size:13px;line-height:1.7;color:#334155}.award{display:inline-block;padding:3mm 10mm;border-radius:999px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;font-size:22px;font-weight:900;letter-spacing:.08em;box-shadow:0 4px 0 #92400e}.result{margin:4mm 0 1mm;font-size:15px;font-weight:800;color:#047857}.scope{margin:0;font-size:11px;color:#64748b}.signatures{display:flex;justify-content:space-between;gap:35mm;margin:12mm auto 0;max-width:180mm}.signatures div{width:65mm;text-align:center}.signatures span{display:block;border-top:1px solid #64748b}.signatures p{margin:2mm 0 0;font-size:10px;color:#64748b}.ornament{position:absolute;z-index:2;color:#fde68a;font-size:31px}.top-left{top:15mm;left:20mm}.top-right{top:15mm;right:20mm}@media print{@page{size:A4 landscape;margin:0}body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}.certificate{width:297mm;height:210mm;margin:0}}
+    </style></head><body>${certificates}<script>window.onload=function(){window.print()}<\/script></body></html>`);
+    printWindow.document.close();
+  };
+
   const handleBulkExportPDF = () => {
     const globalSubject = getGlobalSubject(subjectId);
     const topics = globalSubject?.topics ?? [];
@@ -3207,6 +3253,8 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
           <Button size="sm" variant="outline" onClick={handleExportCSV} className="gap-1.5"><Download className="w-4 h-4" />{t("exportCSV")}</Button>
           <Button size="sm" variant="outline" onClick={handleExportExcel} className="gap-1.5 border-green-300 text-green-700 hover:bg-green-50"><Download className="w-4 h-4" />{lang === "zh" ? "匯出 Excel" : "Export Excel"}</Button>
           <Button size="sm" variant="outline" onClick={handlePrint} className="gap-1.5 border-purple-300 text-purple-700 hover:bg-purple-50"><Printer className="w-4 h-4" />{lang === "zh" ? "列印/PDF" : "Print / PDF"}</Button>
+          <Button size="sm" variant="outline" onClick={handleExportLeaderboardPDF} disabled={rankedOverallLeaderboard.length === 0} className="gap-1.5 border-violet-300 text-violet-700 hover:bg-violet-50"><FileText className="w-4 h-4" />{lang === "zh" ? "排行榜 PDF" : "Ranking PDF"}</Button>
+          <Button size="sm" variant="outline" onClick={handleExportLeaderboardCertificates} disabled={rankedOverallLeaderboard.length === 0} className="gap-1.5 border-amber-300 text-amber-800 hover:bg-amber-50"><GraduationCap className="w-4 h-4" />{lang === "zh" ? "班級獎狀 PDF" : "Class Certificates"}</Button>
           <Button size="sm" onClick={handleBulkExportPDF} className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white"><FileText className="w-4 h-4" />{lang === "zh" ? "全班 PDF 報告" : "All Students PDF"}</Button>
         </div>
       </div>
