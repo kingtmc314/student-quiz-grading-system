@@ -8,7 +8,8 @@ const MINIMUM_PEER_COUNT = 3;
 
 type LocalStudentAccount = { studentNumber: string | null; name: string | null };
 type AssessmentStatus = "complete" | "late" | "missing" | "absent" | "incomplete" | "not-entered";
-type ClassBenchmark = { averagePct: number; peerCount: number; rank: number | null; rankedCount: number };
+type AnonymousLeaderboardEntry = { rank: number; total: number; max: number; pct: number; isCurrentStudent: boolean };
+type ClassBenchmark = { averagePct: number; peerCount: number; rank: number | null; rankedCount: number; leaderboard: AnonymousLeaderboardEntry[] };
 
 type StudentQuestion = {
   label: string;
@@ -197,16 +198,28 @@ export async function getOwnStudentProfile(account: LocalStudentAccount) {
       .map(peer => ({ id: String(peer.id), result: calculateAssessment(assessmentId, String(peer.id), questions, scoresByAssessmentStudent, absentFlagSet, assignmentStatuses) }))
       .filter(peer => peer.result.status === "complete" && peer.result.pct !== null);
     const peerPcts = completedPeers.map(peer => peer.result.pct as number);
+    const eligibleForRank = ownCalculated.status === "complete" && ownCalculated.total !== null && ownCalculated.pct !== null;
+    const leaderboardCandidates = [
+      ...completedPeers.map(peer => ({ total: peer.result.total ?? 0, max: peer.result.max, pct: peer.result.pct as number, isCurrentStudent: false })),
+      ...(eligibleForRank ? [{ total: ownCalculated.total as number, max: ownCalculated.max, pct: ownCalculated.pct as number, isCurrentStudent: true }] : []),
+    ].sort((a, b) => b.pct - a.pct || b.total - a.total);
+    let previousPct: number | null = null;
+    let previousRank = 0;
+    const anonymousLeaderboard = leaderboardCandidates.map((entry, index) => {
+      const rank = previousPct === entry.pct ? previousRank : index + 1;
+      previousPct = entry.pct;
+      previousRank = rank;
+      return { ...entry, rank };
+    });
     const classBenchmark: ClassBenchmark | null = peerPcts.length >= MINIMUM_PEER_COUNT
       ? {
           averagePct: Math.round(peerPcts.reduce((sum, pct) => sum + pct, 0) / peerPcts.length),
           peerCount: peerPcts.length,
-          // Ranking is available only for this student's normal completed entry.
-          // Tied scores receive the same competition rank; peer identities are never returned.
-          rank: ownCalculated.status === "complete" && ownCalculated.pct !== null
-            ? 1 + peerPcts.filter(pct => pct > ownCalculated.pct!).length
-            : null,
-          rankedCount: peerPcts.length + 1,
+          // Rankings contain scores only, never peer identity. Late, absent,
+          // missing and incomplete work is excluded from class comparison.
+          rank: eligibleForRank ? 1 + peerPcts.filter(pct => pct > ownCalculated.pct!).length : null,
+          rankedCount: eligibleForRank ? peerPcts.length + 1 : peerPcts.length,
+          leaderboard: anonymousLeaderboard,
         }
       : null;
 
