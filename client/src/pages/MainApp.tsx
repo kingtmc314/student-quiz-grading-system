@@ -41,7 +41,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.32.0";
+const APP_VERSION = "v1.33.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -203,6 +203,61 @@ function calcExamTotal(
   }
 
   return null;
+}
+
+/**
+ * Teacher leaderboard score. Uses only normal completed entries (callers also
+ * require every started assessment to be complete), so ABS, late, missing and
+ * incomplete work never participates in a class ranking. With a weighting
+ * scheme it respects each available nature's stated weighting; without one it
+ * falls back to a straightforward total-earned / total-possible percentage.
+ */
+function calcOverallRankTotal(
+  studentId: string,
+  assessments: Array<{ id: string; natureId?: string; markSheet: MarkItem[]; scores: ScoreEntry[] }>,
+  getNature: (id: string) => { isExam: boolean } | undefined,
+  scheme: WeightingScheme | undefined,
+): number | null {
+  const byNature = groupByNature(studentId, assessments, false);
+  if (byNature.size === 0) return null;
+  if (!scheme) {
+    let earned = 0;
+    let max = 0;
+    byNature.forEach(group => { earned += group.earned; max += group.max; });
+    return max > 0 ? Math.round((earned / max) * 1000) / 10 : null;
+  }
+
+  let weightedSum = 0;
+  let includedWeight = 0;
+  scheme.caEntries.forEach(entry => {
+    const group = byNature.get(entry.natureId);
+    if (!group || group.max <= 0 || entry.percentage <= 0) return;
+    weightedSum += (group.earned / group.max) * entry.percentage;
+    includedWeight += entry.percentage;
+  });
+
+  const hasConfiguredExamNature = scheme.caEntries.some(entry => getNature(entry.natureId)?.isExam);
+  if (!hasConfiguredExamNature && scheme.examPercentage > 0) {
+    let examEarned = 0;
+    let examMax = 0;
+    byNature.forEach((group, natureId) => {
+      if (getNature(natureId)?.isExam) { examEarned += group.earned; examMax += group.max; }
+    });
+    if (examMax > 0) {
+      weightedSum += (examEarned / examMax) * scheme.examPercentage;
+      includedWeight += scheme.examPercentage;
+    }
+  }
+
+  // A scheme may not have been configured for every assessment nature. Retain
+  // deterministic ranking behaviour by using the started completed evidence.
+  if (includedWeight <= 0) {
+    let earned = 0;
+    let max = 0;
+    byNature.forEach(group => { earned += group.earned; max += group.max; });
+    return max > 0 ? Math.round((earned / max) * 1000) / 10 : null;
+  }
+  return Math.round((weightedSum / includedWeight) * 1000) / 10;
 }
 
 /** @deprecated Use calcCATotal / calcExamTotal instead. Kept for CSV export fallback. */
@@ -2749,6 +2804,29 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const totalMissingStudents = sortedStudents.filter(student => getStudentStatusCounts(student.id).missing > 0).length;
   const totalLateStudents = sortedStudents.filter(student => getStudentStatusCounts(student.id).late > 0).length;
   const totalPendingStudents = sortedStudents.filter(student => getStudentStatusCounts(student.id).pending > 0).length;
+  const overallLeaderboard = statusAssessments.length === 0 ? [] : sortedStudents
+    .map(student => {
+      const status = getStudentStatusCounts(student.id);
+      const isEligible = status.absent === 0 && status.missing === 0 && status.late === 0 && status.pending === 0;
+      const total = isEligible ? calcOverallRankTotal(student.id, statusAssessments, getNature, scheme) : null;
+      return {
+        student,
+        name: lang === "zh" && student.nameCht ? student.nameCht : student.name,
+        ca: isEligible ? calcCATotal(student.id, statusAssessments, getNature, scheme, false) : null,
+        exam: isEligible ? calcExamTotal(student.id, statusAssessments, getNature, scheme, false) : null,
+        total,
+      };
+    })
+    .filter((row): row is { student: Student; name: string; ca: number | null; exam: number | null; total: number } => row.total !== null)
+    .sort((a, b) => b.total - a.total || a.student.classNo.localeCompare(b.student.classNo, undefined, { numeric: true }));
+  let previousLeaderboardScore: number | null = null;
+  let previousLeaderboardRank = 0;
+  const rankedOverallLeaderboard = overallLeaderboard.map((row, index) => {
+    const rank = previousLeaderboardScore === row.total ? previousLeaderboardRank : index + 1;
+    previousLeaderboardScore = row.total;
+    previousLeaderboardRank = rank;
+    return { ...row, rank };
+  });
 
   // Build enriched assessment list
   const allAssessData = assessments.map(a => {
@@ -3166,6 +3244,14 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         ))}
         <span className="ml-auto text-[10px] text-slate-400">{lang === "zh" ? "欠交＝已開始輸入的評估中，未輸入或部分題目未完成；篩選只改變顯示及一般匯出。" : "Missing = not entered or incomplete in started assessments; filters only change display and standard exports."}</span>
       </div>
+
+      <section className="overflow-hidden rounded-xl border border-violet-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-violet-100 bg-gradient-to-r from-violet-50 via-white to-amber-50 px-4 py-3">
+          <div><div className="flex items-center gap-2"><BarChart2 className="h-5 w-5 text-violet-700" /><h3 className="font-bold text-slate-900">{lang === "zh" ? "全班整體加權成績排行榜" : "Class Overall Weighted Leaderboard"}</h3></div><p className="mt-1 text-xs leading-relaxed text-slate-600">{lang === "zh" ? "按目前已開始的評估及加權方案計算。只列入所有已開始評估均正常完成的學生；ABS、遲交、欠交及未完成紀錄不會列入排名。" : "Calculated from currently started assessments and the active weighting scheme. Only students with normal completed records in every started assessment are ranked; ABS, late, missing and incomplete records are excluded."}</p></div>
+          <span className="rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-bold text-violet-700">{rankedOverallLeaderboard.length} {lang === "zh" ? "人已排名" : "ranked"}</span>
+        </div>
+        {rankedOverallLeaderboard.length ? <div className="overflow-x-auto"><table className="w-full min-w-[680px] text-xs"><thead className="bg-violet-50 text-violet-900"><tr><th className="px-4 py-2.5 text-left">{lang === "zh" ? "名次" : "Rank"}</th><th className="px-4 py-2.5 text-left">#</th><th className="px-4 py-2.5 text-left">{t("studentName")}</th><th className="px-4 py-2.5 text-right">{lang === "zh" ? "整體加權" : "Overall"}</th><th className="px-4 py-2.5 text-right text-blue-700">CA</th><th className="px-4 py-2.5 text-right text-red-600">{lang === "zh" ? "大考" : "Exam"}</th><th className="px-4 py-2.5 text-left">{lang === "zh" ? "成就" : "Achievement"}</th></tr></thead><tbody className="divide-y divide-violet-50">{rankedOverallLeaderboard.map((row, index) => { const achievement = row.rank === 1 ? (lang === "zh" ? "全班總冠軍" : "Class Champion") : row.rank === 2 ? (lang === "zh" ? "菁英榜眼" : "Elite Runner-up") : row.rank === 3 ? (lang === "zh" ? "卓越新星" : "Excellence Star") : (lang === "zh" ? "持續進步" : "Keep Growing"); return <tr key={row.student.id} className={cn(index % 2 ? "bg-slate-50/50" : "bg-white", row.rank === 1 && "bg-amber-50/70")}><td className="px-4 py-2.5 font-mono text-base font-black text-violet-800">{row.rank}</td><td className="px-4 py-2.5 font-mono text-slate-500">{row.student.classNo}</td><td className="px-4 py-2.5 font-semibold text-slate-800">{row.name}</td><td className={cn("px-4 py-2.5 text-right font-mono text-sm font-black", row.total >= 70 ? "text-green-600" : row.total >= 50 ? "text-amber-600" : "text-red-600")}>{row.total}%</td><td className="px-4 py-2.5 text-right font-mono text-blue-700">{row.ca === null ? "—" : `${row.ca}%`}</td><td className="px-4 py-2.5 text-right font-mono text-red-600">{row.exam === null ? "—" : `${row.exam}%`}</td><td className="px-4 py-2.5"><span className={cn("rounded-full px-2 py-1 text-[10px] font-bold", row.rank === 1 ? "bg-amber-100 text-amber-800" : row.rank <= 3 ? "bg-violet-100 text-violet-800" : "bg-slate-100 text-slate-600")}>{achievement}</span></td></tr>; })}</tbody></table></div> : <div className="px-4 py-8 text-center text-sm text-slate-400">{lang === "zh" ? "暫未有足夠的正常完成成績以建立整體排行榜。" : "There are not yet enough normal completed records to create an overall leaderboard."}</div>}
+      </section>
 
       {assessments.length === 0 ? (
         <div className="bg-white rounded-xl border border-dashed border-slate-200 p-12 text-center text-slate-400 text-sm">{t("noAssessmentsYet")}</div>

@@ -8,8 +8,10 @@ const MINIMUM_PEER_COUNT = 3;
 
 type LocalStudentAccount = { studentNumber: string | null; name: string | null };
 type AssessmentStatus = "complete" | "late" | "missing" | "absent" | "incomplete" | "not-entered";
-type AnonymousLeaderboardEntry = { rank: number; total: number; max: number; pct: number; isCurrentStudent: boolean };
-type ClassBenchmark = { averagePct: number; peerCount: number; rank: number | null; rankedCount: number; leaderboard: AnonymousLeaderboardEntry[] };
+/** Public leaderboard fields approved for the student portal: name and result only. */
+type NamedLeaderboardEntry = { rank: number; name: string; total: number; max: number; pct: number; isCurrentStudent: boolean };
+type TopicLeaderboard = { id: string; level: string; learningUnit: string; entries: NamedLeaderboardEntry[] };
+type ClassBenchmark = { averagePct: number; peerCount: number; rank: number | null; rankedCount: number; leaderboard: NamedLeaderboardEntry[]; topicLeaderboards: TopicLeaderboard[] };
 
 type StudentQuestion = {
   label: string;
@@ -38,7 +40,7 @@ type StudentAssessment = {
   total: number | null;
   max: number;
   pct: number | null;
-  /** Aggregate only: never exposes a classmate's identity or individual mark. */
+  /** Named public leaderboard approved by the teacher; excludes account data. */
   classBenchmark: ClassBenchmark | null;
   questions: StudentQuestion[];
 };
@@ -116,10 +118,10 @@ function calculateAssessment(
 }
 
 /**
- * Builds a student-safe report from the SQGS data source. Score rows are only
- * emitted for the authenticated student. Class comparison is aggregate-only,
- * requires three or more other on-time completed peers, and never exposes
- * classmates' names, marks, rank, or score distribution.
+ * Builds a report for the authenticated student. Personal question-level marks
+ * are emitted only for that student. The teacher-approved public leaderboards
+ * expose only names and score results—never student numbers or account data—
+ * and require three or more other on-time completed peers.
  */
 export async function getOwnStudentProfile(account: LocalStudentAccount) {
   const studentNumber = account.studentNumber?.trim().toLocaleUpperCase();
@@ -192,34 +194,80 @@ export async function getOwnStudentProfile(account: LocalStudentAccount) {
       .sort((a, b) => asNumber(a.sort_order) - asNumber(b.sort_order));
     const ownCalculated = calculateAssessment(assessmentId, studentId, questions, scoresByAssessmentStudent, absentFlagSet, assignmentStatuses);
 
-    // Comparison peers are anonymous, on-time and fully completed only.
+    // Rankings include normal, fully completed work only; ABS, late, missing and
+    // incomplete entries remain excluded from class comparison.
     const completedPeers = (studentsByClassId.get(String(classRow.id)) ?? [])
       .filter(peer => String(peer.id) !== studentId)
-      .map(peer => ({ id: String(peer.id), result: calculateAssessment(assessmentId, String(peer.id), questions, scoresByAssessmentStudent, absentFlagSet, assignmentStatuses) }))
+      .map(peer => ({
+        id: String(peer.id),
+        name: displayText(peer.name_cht, peer.name),
+        result: calculateAssessment(assessmentId, String(peer.id), questions, scoresByAssessmentStudent, absentFlagSet, assignmentStatuses),
+      }))
       .filter(peer => peer.result.status === "complete" && peer.result.pct !== null);
     const peerPcts = completedPeers.map(peer => peer.result.pct as number);
     const eligibleForRank = ownCalculated.status === "complete" && ownCalculated.total !== null && ownCalculated.pct !== null;
     const leaderboardCandidates = [
-      ...completedPeers.map(peer => ({ total: peer.result.total ?? 0, max: peer.result.max, pct: peer.result.pct as number, isCurrentStudent: false })),
-      ...(eligibleForRank ? [{ total: ownCalculated.total as number, max: ownCalculated.max, pct: ownCalculated.pct as number, isCurrentStudent: true }] : []),
+      ...completedPeers.map(peer => ({ name: peer.name, total: peer.result.total ?? 0, max: peer.result.max, pct: peer.result.pct as number, isCurrentStudent: false })),
+      ...(eligibleForRank ? [{ name: displayText(ownStudent.name_cht, ownStudent.name), total: ownCalculated.total as number, max: ownCalculated.max, pct: ownCalculated.pct as number, isCurrentStudent: true }] : []),
     ].sort((a, b) => b.pct - a.pct || b.total - a.total);
     let previousPct: number | null = null;
     let previousRank = 0;
-    const anonymousLeaderboard = leaderboardCandidates.map((entry, index) => {
+    const namedLeaderboard = leaderboardCandidates.map((entry, index) => {
       const rank = previousPct === entry.pct ? previousRank : index + 1;
       previousPct = entry.pct;
       previousRank = rank;
       return { ...entry, rank };
     });
+    const topicGroups = new Map<string, { id: string; level: string; learningUnit: string; questions: Record<string, unknown>[] }>();
+    questions.forEach(question => {
+      if (!question.topic_id || asNumber(question.max_mark) <= 0) return;
+      const topic = topicById.get(String(question.topic_id));
+      if (!topic) return;
+      const level = String(topic.level || "未設定程度");
+      const learningUnit = String(topic.learning_unit || "未分類單元");
+      const id = `${level}::${learningUnit}`;
+      const group = topicGroups.get(id) ?? { id, level, learningUnit, questions: [] };
+      group.questions.push(question);
+      topicGroups.set(id, group);
+    });
+    const rankEntries = (entries: Array<{ name: string; total: number; max: number; pct: number; isCurrentStudent: boolean }>): NamedLeaderboardEntry[] => {
+      const sorted = [...entries].sort((a, b) => b.pct - a.pct || b.total - a.total);
+      let lastPct: number | null = null;
+      let lastRank = 0;
+      return sorted.map((entry, index) => {
+        const rank = lastPct === entry.pct ? lastRank : index + 1;
+        lastPct = entry.pct;
+        lastRank = rank;
+        return { ...entry, rank };
+      });
+    };
+    const topicLeaderboards: TopicLeaderboard[] = eligibleForRank && peerPcts.length >= MINIMUM_PEER_COUNT
+      ? Array.from(topicGroups.values()).map(group => {
+          const scoreFor = (result: CalculatedAssessment) => {
+            const max = group.questions.reduce((sum, question) => sum + asNumber(question.max_mark), 0);
+            const total = group.questions.reduce((sum, question) => sum + (result.scoreMap.get(String(question.id)) ?? 0), 0);
+            return { total, max, pct: max > 0 ? Math.round((total / max) * 100) : 0 };
+          };
+          return {
+            id: group.id,
+            level: group.level,
+            learningUnit: group.learningUnit,
+            entries: rankEntries([
+              ...completedPeers.map(peer => ({ name: peer.name, ...scoreFor(peer.result), isCurrentStudent: false })),
+              { name: displayText(ownStudent.name_cht, ownStudent.name), ...scoreFor(ownCalculated), isCurrentStudent: true },
+            ]),
+          };
+        }).filter(group => group.entries.length >= MINIMUM_PEER_COUNT + 1)
+      : [];
     const classBenchmark: ClassBenchmark | null = peerPcts.length >= MINIMUM_PEER_COUNT
       ? {
           averagePct: Math.round(peerPcts.reduce((sum, pct) => sum + pct, 0) / peerPcts.length),
           peerCount: peerPcts.length,
-          // Rankings contain scores only, never peer identity. Late, absent,
-          // missing and incomplete work is excluded from class comparison.
+          // Teacher-approved student-facing standings show names/results only.
           rank: eligibleForRank ? 1 + peerPcts.filter(pct => pct > ownCalculated.pct!).length : null,
           rankedCount: eligibleForRank ? peerPcts.length + 1 : peerPcts.length,
-          leaderboard: anonymousLeaderboard,
+          leaderboard: namedLeaderboard,
+          topicLeaderboards,
         }
       : null;
 
