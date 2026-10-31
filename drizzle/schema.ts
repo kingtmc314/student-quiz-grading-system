@@ -79,11 +79,27 @@ export const studentReportExports = mysqlTable("studentReportExports", {
   index("student_report_exports_user_created_idx").on(table.userId, table.createdAt),
 ]);
 
+/**
+ * Per-teacher certificate signature settings. Image bytes live in protected
+ * object storage; this table only records the storage key, display URL and the
+ * optional name printed below the signature.
+ */
+export const teacherCertificateSignatures = mysqlTable("teacherCertificateSignatures", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().unique(),
+  signatureKey: varchar("signatureKey", { length: 512 }),
+  signatureUrl: varchar("signatureUrl", { length: 512 }),
+  signerName: varchar("signerName", { length: 160 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type AccountAuditLog = typeof accountAuditLogs.$inferSelect;
 export type StudentTopicProgress = typeof studentTopicProgress.$inferSelect;
 export type StudentReportExport = typeof studentReportExports.$inferSelect;
+export type TeacherCertificateSignature = typeof teacherCertificateSignatures.$inferSelect;
 export type StudentTopicProgressStatus = "completed" | "review";
 export type AccountRole = "admin" | "teacher" | "student";
 

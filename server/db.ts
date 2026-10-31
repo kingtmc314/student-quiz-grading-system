@@ -9,6 +9,8 @@ import {
   studentReportExports,
   studentTopicProgress,
   type StudentTopicProgressStatus,
+  teacherCertificateSignatures,
+  type TeacherCertificateSignature,
   type User,
   users,
 } from "../drizzle/schema";
@@ -454,6 +456,56 @@ export async function listStudentReportExports(userId: number) {
     }
     return { ...row, language: row.language === "en" ? "en" as const : "zh" as const, assessmentIds };
   });
+}
+
+export type SafeTeacherCertificateSignature = Pick<TeacherCertificateSignature, "signatureKey" | "signatureUrl" | "signerName" | "updatedAt">;
+
+/** Returns only the authenticated teacher's own certificate signature configuration. */
+export async function getTeacherCertificateSignature(userId: number): Promise<SafeTeacherCertificateSignature | null> {
+  const db = await requireDb();
+  const rows = await db.select({
+    signatureKey: teacherCertificateSignatures.signatureKey,
+    signatureUrl: teacherCertificateSignatures.signatureUrl,
+    signerName: teacherCertificateSignatures.signerName,
+    updatedAt: teacherCertificateSignatures.updatedAt,
+  }).from(teacherCertificateSignatures)
+    .where(eq(teacherCertificateSignatures.userId, userId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** Stores only a secure object-storage reference, never raw signature image bytes. */
+export async function saveTeacherCertificateSignature(input: {
+  userId: number;
+  signatureKey: string | null;
+  signatureUrl: string | null;
+  signerName: string | null;
+}): Promise<SafeTeacherCertificateSignature> {
+  const db = await requireDb();
+  const now = new Date();
+  await db.insert(teacherCertificateSignatures).values({
+    userId: input.userId,
+    signatureKey: input.signatureKey,
+    signatureUrl: input.signatureUrl,
+    signerName: input.signerName,
+    updatedAt: now,
+  }).onDuplicateKeyUpdate({
+    set: {
+      signatureKey: input.signatureKey,
+      signatureUrl: input.signatureUrl,
+      signerName: input.signerName,
+      updatedAt: now,
+    },
+  });
+  await recordAccountAudit({
+    actorUserId: input.userId,
+    targetUserId: input.userId,
+    action: "certificate_signature_updated",
+    details: { hasSignatureImage: Boolean(input.signatureUrl), hasSignerName: Boolean(input.signerName) },
+  });
+  const saved = await getTeacherCertificateSignature(input.userId);
+  if (!saved) throw new Error("Certificate signature settings could not be saved");
+  return saved;
 }
 
 export function isManagedRole(role: User["role"]): role is AccountRole {

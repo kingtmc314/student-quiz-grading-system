@@ -6,6 +6,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { storagePut } from "./storage";
 import { getOwnStudentProfile } from "./studentProfile";
 
 const usernameSchema = z.string().trim().min(3, "帳戶名稱最少 3 個字元").max(64, "帳戶名稱最多 64 個字元").regex(/^[a-zA-Z0-9._-]+$/, "帳戶名稱只可包含英文字母、數字、句點、底線或連字號");
@@ -20,11 +21,41 @@ const reportExportScopeSchema = z.object({
   language: z.enum(["zh", "en"]),
   assessmentIds: z.array(z.string().trim().min(1).max(128)).min(1).max(500),
 });
+const certificateSignatureDataUrlSchema = z.string().max(1_500_000, "簽名圖片檔案過大，請使用小於 1 MB 的 PNG 或 JPG 檔案");
+const certificateSignatureSettingsSchema = z.object({
+  signerName: z.string().trim().max(160, "簽名顯示名稱最多 160 個字元"),
+  imageDataUrl: certificateSignatureDataUrlSchema.optional(),
+  clearImage: z.boolean().optional().default(false),
+});
+const MAX_CERTIFICATE_SIGNATURE_BYTES = 1_000_000;
 
 function assertLocalAccountRole(user: { role: string; active: boolean }) {
   if (!user.active || (user.role !== "admin" && user.role !== "teacher" && user.role !== "student")) {
     throw new TRPCError({ code: "FORBIDDEN", message: "此帳戶沒有系統存取權限" });
   }
+}
+
+function assertTeacherOrAdmin(user: { role: string; active: boolean }) {
+  if (!user.active || (user.role !== "admin" && user.role !== "teacher")) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "此功能只供教師或管理員使用" });
+  }
+}
+
+function parseCertificateSignatureImage(dataUrl: string): { bytes: Buffer; contentType: "image/png" | "image/jpeg"; extension: "png" | "jpg" } {
+  const matched = /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/=\s]+)$/.exec(dataUrl);
+  if (!matched) throw new TRPCError({ code: "BAD_REQUEST", message: "只接受 PNG 或 JPG 格式的簽名圖片" });
+
+  const contentType = matched[1] as "image/png" | "image/jpeg";
+  const bytes = Buffer.from(matched[2].replace(/\s/g, ""), "base64");
+  if (!bytes.length || bytes.length > MAX_CERTIFICATE_SIGNATURE_BYTES) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "簽名圖片必須小於 1 MB" });
+  }
+  const isPng = bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const isJpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if ((contentType === "image/png" && !isPng) || (contentType === "image/jpeg" && !isJpeg)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "簽名圖片格式與檔案內容不符" });
+  }
+  return { bytes, contentType, extension: contentType === "image/png" ? "png" : "jpg" };
 }
 
 export const appRouter = router({
@@ -95,6 +126,35 @@ export const appRouter = router({
     delete: adminProcedure.input(z.object({ accountId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await db.deleteStudentLoginAccount({ ...input, actorUserId: ctx.user.id });
       return { success: true } as const;
+    }),
+  }),
+  certificateSignature: router({
+    mine: protectedProcedure.query(async ({ ctx }) => {
+      assertTeacherOrAdmin(ctx.user);
+      return db.getTeacherCertificateSignature(ctx.user.id);
+    }),
+    save: protectedProcedure.input(certificateSignatureSettingsSchema).mutation(async ({ ctx, input }) => {
+      assertTeacherOrAdmin(ctx.user);
+      const existing = await db.getTeacherCertificateSignature(ctx.user.id);
+      let signatureKey = existing?.signatureKey ?? null;
+      let signatureUrl = existing?.signatureUrl ?? null;
+
+      if (input.imageDataUrl) {
+        const image = parseCertificateSignatureImage(input.imageDataUrl);
+        const stored = await storagePut(`certificate-signatures/${ctx.user.id}/signature.${image.extension}`, image.bytes, image.contentType);
+        signatureKey = stored.key;
+        signatureUrl = stored.url;
+      } else if (input.clearImage) {
+        signatureKey = null;
+        signatureUrl = null;
+      }
+
+      return db.saveTeacherCertificateSignature({
+        userId: ctx.user.id,
+        signatureKey,
+        signatureUrl,
+        signerName: input.signerName || null,
+      });
     }),
   }),
   studentProfile: router({

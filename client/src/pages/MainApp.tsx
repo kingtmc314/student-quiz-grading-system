@@ -21,6 +21,8 @@ import { useI18n } from "@/contexts/I18nContext";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AccountManagement from "@/pages/AccountManagement";
 import StudentLoginManagement from "@/pages/StudentLoginManagement";
+import TeacherCertificateSignatureSettings from "@/pages/TeacherCertificateSignatureSettings";
+import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,7 +43,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.34.0";
+const APP_VERSION = "v1.35.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -271,6 +273,55 @@ function calcWeightedTotal(
     ca: calcCATotal(studentId, assessments, getNature, scheme),
     exam: calcExamTotal(studentId, assessments, getNature, scheme),
   };
+}
+
+type CertificateTopicRecognition = {
+  topicName: string;
+  titleZh: string;
+  titleEn: string;
+  percentage: number;
+};
+
+function certificateTitleForTopic(topic: Topic, topicName: string): Pick<CertificateTopicRecognition, "titleZh" | "titleEn"> {
+  const source = [topic.code, topic.name, topic.nameCht, topic.learningUnit, topic.learningObjective].filter(Boolean).join(" ").toLocaleLowerCase();
+  if (source.includes("微分") || source.includes("differentiat") || source.includes("derivative")) return { titleZh: "微分大師", titleEn: "Differentiation Master" };
+  if (source.includes("積分") || source.includes("integrat")) return { titleZh: "積分達人", titleEn: "Integration Maestro" };
+  if (source.includes("三角") || source.includes("trigon")) return { titleZh: "三角先鋒", titleEn: "Trigonometry Trailblazer" };
+  if (source.includes("機率") || source.includes("統計") || source.includes("probability") || source.includes("statistic")) return { titleZh: "數據偵探", titleEn: "Data Detective" };
+  if (source.includes("代數") || source.includes("algebra")) return { titleZh: "代數智多星", titleEn: "Algebra Ace" };
+  if (source.includes("幾何") || source.includes("geometry")) return { titleZh: "幾何探索家", titleEn: "Geometry Explorer" };
+  if (source.includes("函數") || source.includes("function")) return { titleZh: "函數導航員", titleEn: "Functions Navigator" };
+  if (source.includes("數列") || source.includes("sequence")) return { titleZh: "數列策略家", titleEn: "Sequence Strategist" };
+  if (source.includes("二次") || source.includes("quadratic")) return { titleZh: "二次方程專家", titleEn: "Quadratic Specialist" };
+  const shortName = topicName.trim() || "數學";
+  return { titleZh: `${shortName} 達人`, titleEn: `${shortName} Master` };
+}
+
+/** Uses only normal, complete, topic-tagged marks from the active leaderboard scope. */
+function getCertificateTopicRecognition(studentId: string, assessments: Assessment[], topics: Topic[], lang: "zh" | "en"): CertificateTopicRecognition | null {
+  const topicResults = topics.map(topic => {
+    let earned = 0;
+    let max = 0;
+    assessments.forEach(assessment => {
+      if (getScoreEntryState(assessment, studentId) !== "complete") return;
+      const scoreMap = getScoreMap(assessment, studentId);
+      assessment.markSheet.filter(item => !item.isSection && item.topicId === topic.id).forEach(item => {
+        const score = scoreMap[item.id];
+        if (typeof score !== "number") return;
+        earned += score;
+        max += item.maxMark;
+      });
+    });
+    return { topic, max, percentage: max > 0 ? Math.round((earned / max) * 100) : null };
+  }).filter((result): result is { topic: Topic; max: number; percentage: number } => result.percentage !== null)
+    .sort((a, b) => b.percentage - a.percentage || b.max - a.max || a.topic.order - b.topic.order);
+
+  const best = topicResults[0];
+  if (!best) return null;
+  const topicName = lang === "zh" && best.topic.nameCht
+    ? best.topic.nameCht
+    : (best.topic.learningUnit || best.topic.name);
+  return { topicName, percentage: best.percentage, ...certificateTitleForTopic(best.topic, topicName) };
 }
 
 // ─── Tab IDs ──────────────────────────────────────────────────────────────────
@@ -2764,6 +2815,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const [summaryCAFilter, setSummaryCAFilter] = useState<string>("all");
   const [summaryStudentFilter, setSummaryStudentFilter] = useState<"all" | "absent" | "missing" | "late" | "pending">("all");
   const [collapsedTerms, setCollapsedTerms] = useState<Set<string>>(new Set());
+  const { data: certificateSignature } = trpc.certificateSignature.mine.useQuery(undefined, { retry: false });
 
   const toggleTerm = (term: string) => {
     setCollapsedTerms(prev => {
@@ -2780,6 +2832,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const assessments = cls.assessments ?? [];
   const sortedStudents = [...cls.students].sort((a, b) => a.classNo.localeCompare(b.classNo, undefined, { numeric: true }));
   const scheme = getWeightingScheme(cls.form, subjectId, cls.weightingSchemeId);
+  const certificateTopics = getGlobalSubject(subjectId)?.topics ?? [];
   const statusAssessments = assessments.filter(assessment => {
     const nature = getNature(assessment.natureId ?? "");
     const isExam = nature?.isExam ?? false;
@@ -3047,10 +3100,22 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     const subjectDisplayName = lang === "zh" && subject.nameCht ? subject.nameCht : subject.name;
     const award = (rank: number) => rank === 1 ? (lang === "zh" ? "全班總冠軍" : "Class Champion") : rank === 2 ? (lang === "zh" ? "菁英榜眼" : "Elite Runner-up") : (lang === "zh" ? "卓越新星" : "Excellence Star");
     const scope = summaryFilter === "exam" ? (lang === "zh" ? "已開始的大考評估" : "Started exam assessments")
+      : summaryFilter === "ca" && summaryCAFilter !== "all" ? `${lang === "zh" ? "已開始的 CA 類別：" : "Started CA category: "}${availableCANatures.find(nature => nature.id === summaryCAFilter)?.[lang === "zh" ? "nameCht" : "name"] || "—"}`
       : summaryFilter === "ca" ? (lang === "zh" ? "已開始的平時分評估" : "Started CA assessments")
       : (lang === "zh" ? "所有已開始評估" : "All started assessments");
     const date = new Date().toLocaleDateString(lang === "zh" ? "zh-HK" : "en-GB", { year: "numeric", month: "long", day: "numeric" });
-    const certificates = recipients.map(row => `<section class="certificate"><div class="ornament top-left">✦</div><div class="ornament top-right">✦</div><div class="inner"><div class="kicker">${lang === "zh" ? "數學成績分析系統" : "MATHS PERFORMANCE ANALYTICS"}</div><h1>${lang === "zh" ? "班級優異成績獎狀" : "Certificate of Achievement"}</h1><p class="presented">${lang === "zh" ? "謹此頒發予" : "This certificate is proudly presented to"}</p><h2>${escapeHtml(row.name)}</h2><p class="classno">${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(row.student.classNo)}</p><p class="citation">${lang === "zh" ? `在 ${escapeHtml(year.label)} ${escapeHtml(subjectDisplayName)} ${escapeHtml(cls.name)} 的整體加權成績中，榮獲` : `for achieving outstanding performance in the overall weighted results for ${escapeHtml(year.label)} ${escapeHtml(subjectDisplayName)} ${escapeHtml(cls.name)}, earning the award of`}</p><div class="award">${escapeHtml(award(row.rank))}</div><p class="result">${lang === "zh" ? `全班第 ${row.rank} 名 · 整體加權 ${row.total}%` : `Rank ${row.rank} in class · Overall weighted result ${row.total}%`}</p><p class="scope">${escapeHtml(scope)} · ${escapeHtml(scheme?.label || (lang === "zh" ? "現行加權方案" : "Current weighting scheme"))}</p><div class="signatures"><div><span></span><p>${lang === "zh" ? "科任老師" : "Subject Teacher"}</p></div><div><span></span><p>${lang === "zh" ? "日期" : "Date"}: ${escapeHtml(date)}</p></div></div></div></section>`).join("");
+    const signatureImageUrl = certificateSignature?.signatureUrl ? new URL(certificateSignature.signatureUrl, window.location.origin).toString() : "";
+    const signerName = certificateSignature?.signerName?.trim() || (lang === "zh" ? "科任老師" : "Subject Teacher");
+    const certificates = recipients.map(row => {
+      const recognition = getCertificateTopicRecognition(row.student.id, statusAssessments, certificateTopics, lang);
+      const recognitionMarkup = recognition
+        ? `<div style="margin:4mm auto 0;max-width:160mm;padding:2.2mm 5mm;border-radius:999px;background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a;font-size:11px;font-weight:700"><span>${lang === "zh" ? "專長課題稱號" : "Specialty Topic Recognition"}: ${escapeHtml(lang === "zh" ? recognition.titleZh : recognition.titleEn)}</span><span style="margin:0 5px;color:#93c5fd">•</span><span style="font-weight:500">${escapeHtml(recognition.topicName)} · ${recognition.percentage}%</span></div>`
+        : "";
+      const signatureMarkup = signatureImageUrl
+        ? `<img src="${escapeHtml(signatureImageUrl)}" alt="${lang === "zh" ? "教師簽名" : "Teacher signature"}" style="display:block;height:16mm;max-width:56mm;object-fit:contain;margin:0 auto 1mm" />`
+        : `<div style="height:17mm"></div>`;
+      return `<section class="certificate"><div class="ornament top-left">✦</div><div class="ornament top-right">✦</div><div class="inner"><div class="kicker">${lang === "zh" ? "數學成績分析系統" : "MATHS PERFORMANCE ANALYTICS"}</div><h1>${lang === "zh" ? "班級優異成績獎狀" : "Certificate of Achievement"}</h1><p class="presented">${lang === "zh" ? "謹此頒發予" : "This certificate is proudly presented to"}</p><h2>${escapeHtml(row.name)}</h2><p class="classno">${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(row.student.classNo)}</p><p class="citation">${lang === "zh" ? `在 ${escapeHtml(year.label)} ${escapeHtml(subjectDisplayName)} ${escapeHtml(cls.name)} 的整體加權成績中，榮獲` : `for achieving outstanding performance in the overall weighted results for ${escapeHtml(year.label)} ${escapeHtml(subjectDisplayName)} ${escapeHtml(cls.name)}, earning the award of`}</p><div class="award">${escapeHtml(award(row.rank))}</div><p class="result">${lang === "zh" ? `全班第 ${row.rank} 名 · 整體加權 ${row.total}%` : `Rank ${row.rank} in class · Overall weighted result ${row.total}%`}</p>${recognitionMarkup}<p class="scope">${escapeHtml(scope)} · ${escapeHtml(scheme?.label || (lang === "zh" ? "現行加權方案" : "Current weighting scheme"))}</p><div class="signatures"><div><div style="height:18mm;display:flex;align-items:flex-end;justify-content:center">${signatureMarkup}</div><span></span><p style="font-weight:700;color:#334155">${escapeHtml(signerName)}</p><p>${lang === "zh" ? "科任老師" : "Subject Teacher"}</p></div><div><div style="height:18mm"></div><span></span><p>${lang === "zh" ? "日期" : "Date"}: ${escapeHtml(date)}</p></div></div></div></section>`;
+    }).join("");
     const printWindow = window.open("", "_blank");
     if (!printWindow) { toast.error(lang === "zh" ? "無法開啟獎狀視窗，請允許彈出視窗。" : "Unable to open the certificate window. Please allow popups."); return; }
     printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(cls.name)} — ${lang === "zh" ? "班級獎狀" : "Class Certificates"}</title><style>
@@ -4537,7 +4602,7 @@ function SettingsTab() {
   const { teachers, addTeacher, updateTeacher, deleteTeacher, natures, addNature, updateNature, deleteNature, weightingSchemes, addWeightingScheme, updateWeightingScheme, deleteWeightingScheme, subjects, addTopic, updateTopic, deleteTopic, replaceTopicsFromSyllabus, syllabusItems, setSyllabusItems } = useData();
   const { t, lang, setLang } = useI18n();
 
-  const [activeSection, setActiveSection] = useState<"teachers" | "natures" | "weighting" | "topics">("teachers");
+  const [activeSection, setActiveSection] = useState<"teachers" | "signature" | "natures" | "weighting" | "topics">("teachers");
 
   // Syllabus state
   const syllabusFileRef = useRef<HTMLInputElement>(null);
@@ -4712,6 +4777,7 @@ function SettingsTab() {
 
   const sections = [
     { id: "teachers" as const, label: lang === "zh" ? "教師" : "Teachers" },
+    { id: "signature" as const, label: lang === "zh" ? "獎狀簽名" : "Certificate Signature" },
     { id: "natures" as const, label: lang === "zh" ? "評估性質" : "Assessment Natures" },
     { id: "weighting" as const, label: lang === "zh" ? "加權方案" : "Weighting Schemes" },
     { id: "topics" as const, label: lang === "zh" ? "課題管理" : "Topic Management" },
@@ -4780,6 +4846,8 @@ function SettingsTab() {
             </div>
           </div>
         )}
+
+        {activeSection === "signature" && <TeacherCertificateSignatureSettings />}
 
         {activeSection === "natures" && (
           <div className="space-y-4">
