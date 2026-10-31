@@ -43,7 +43,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.35.0";
+const APP_VERSION = "v1.36.0";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -2901,6 +2901,31 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const availableCANatures = natures.filter(nature =>
     !nature.isExam && allAssessData.some(assessment => assessment.natureId === nature.id)
   );
+  const certificateScope = summaryFilter === "exam" ? (lang === "zh" ? "已開始的大考評估" : "Started exam assessments")
+    : summaryFilter === "ca" && summaryCAFilter !== "all" ? `${lang === "zh" ? "已開始的 CA 類別：" : "Started CA category: "}${availableCANatures.find(nature => nature.id === summaryCAFilter)?.[lang === "zh" ? "nameCht" : "name"] || "—"}`
+    : summaryFilter === "ca" ? (lang === "zh" ? "已開始的平時分評估" : "Started CA assessments")
+    : (lang === "zh" ? "所有已開始評估" : "All started assessments");
+  const chronologicalScopeAssessments = [...statusAssessments].sort((a, b) =>
+    (a.date || "").localeCompare(b.date || "") || (a.code || a.title).localeCompare(b.code || b.title, undefined, { numeric: true })
+  );
+  const improvementCandidates = sortedStudents.map(student => {
+    const completed = chronologicalScopeAssessments.flatMap(assessment => {
+      const total = getScoreTotal(assessment, student.id);
+      const max = getAssessmentMax(assessment);
+      if (total === null || max <= 0) return [];
+      return [{ assessment, percentage: Math.round((total / max) * 1000) / 10 }];
+    });
+    if (completed.length < 2) return null;
+    const first = completed[0];
+    const latest = completed[completed.length - 1];
+    const improvement = Math.round((latest.percentage - first.percentage) * 10) / 10;
+    return improvement > 0 ? { student, first, latest, improvement } : null;
+  }).filter((candidate): candidate is { student: Student; first: { assessment: Assessment; percentage: number }; latest: { assessment: Assessment; percentage: number }; improvement: number } => candidate !== null);
+  const bestImprovement = improvementCandidates.length > 0 ? Math.max(...improvementCandidates.map(candidate => candidate.improvement)) : null;
+  const bestImprovementRecipients = bestImprovement === null ? [] : improvementCandidates.filter(candidate => candidate.improvement === bestImprovement);
+  const diligenceRecipients = statusAssessments.length === 0 ? [] : sortedStudents.filter(student =>
+    statusAssessments.every(assessment => getScoreEntryState(assessment, student.id) === "complete")
+  );
 
   // Group by term, then CA subcategory (Quiz/Test/Assignment etc.), then natural code order.
   const termGroups = ORDERED_TERMS.map(term => {
@@ -3091,34 +3116,93 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     printWindow.document.close();
   };
 
-  const handleExportLeaderboardCertificates = () => {
-    const recipients = rankedOverallLeaderboard.filter(row => row.rank <= 3);
-    if (recipients.length === 0) { toast.error(lang === "zh" ? "暫未有可產生獎狀的正常完成排行榜成績。" : "There are no eligible completed rankings to certificate yet."); return; }
+  const handleExportAwardCertificates = (awardType: "leaderboard" | "improvement" | "diligence") => {
+    type CertificateRecipient = {
+      student: Student;
+      name: string;
+      award: string;
+      citation: string;
+      result: string;
+      scopeDetail: string;
+    };
+    const subjectDisplayName = lang === "zh" && subject.nameCht ? subject.nameCht : subject.name;
     const escapeHtml = (value: string | number) => String(value)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
-    const subjectDisplayName = lang === "zh" && subject.nameCht ? subject.nameCht : subject.name;
-    const award = (rank: number) => rank === 1 ? (lang === "zh" ? "全班總冠軍" : "Class Champion") : rank === 2 ? (lang === "zh" ? "菁英榜眼" : "Elite Runner-up") : (lang === "zh" ? "卓越新星" : "Excellence Star");
-    const scope = summaryFilter === "exam" ? (lang === "zh" ? "已開始的大考評估" : "Started exam assessments")
-      : summaryFilter === "ca" && summaryCAFilter !== "all" ? `${lang === "zh" ? "已開始的 CA 類別：" : "Started CA category: "}${availableCANatures.find(nature => nature.id === summaryCAFilter)?.[lang === "zh" ? "nameCht" : "name"] || "—"}`
-      : summaryFilter === "ca" ? (lang === "zh" ? "已開始的平時分評估" : "Started CA assessments")
-      : (lang === "zh" ? "所有已開始評估" : "All started assessments");
     const date = new Date().toLocaleDateString(lang === "zh" ? "zh-HK" : "en-GB", { year: "numeric", month: "long", day: "numeric" });
     const signatureImageUrl = certificateSignature?.signatureUrl ? new URL(certificateSignature.signatureUrl, window.location.origin).toString() : "";
     const signerName = certificateSignature?.signerName?.trim() || (lang === "zh" ? "科任老師" : "Subject Teacher");
-    const certificates = recipients.map(row => {
-      const recognition = getCertificateTopicRecognition(row.student.id, statusAssessments, certificateTopics, lang);
+    const leaderboardAward = (rank: number) => rank === 1 ? (lang === "zh" ? "全班總冠軍" : "Class Champion") : rank === 2 ? (lang === "zh" ? "菁英榜眼" : "Elite Runner-up") : (lang === "zh" ? "卓越新星" : "Excellence Star");
+    const recipients: CertificateRecipient[] = awardType === "leaderboard"
+      ? rankedOverallLeaderboard.filter(row => row.rank <= 3).map(row => ({
+          student: row.student,
+          name: row.name,
+          award: leaderboardAward(row.rank),
+          citation: lang === "zh"
+            ? `在 ${year.label} ${subjectDisplayName} ${cls.name} 的整體加權成績中，榮獲`
+            : `for achieving outstanding performance in the overall weighted results for ${year.label} ${subjectDisplayName} ${cls.name}, earning the award of`,
+          result: lang === "zh" ? `全班第 ${row.rank} 名 · 整體加權 ${row.total}%` : `Rank ${row.rank} in class · Overall weighted result ${row.total}%`,
+          scopeDetail: `${certificateScope} · ${scheme?.label || (lang === "zh" ? "現行加權方案" : "Current weighting scheme")}`,
+        }))
+      : awardType === "improvement"
+        ? bestImprovementRecipients.map(candidate => ({
+            student: candidate.student,
+            name: lang === "zh" && candidate.student.nameCht ? candidate.student.nameCht : candidate.student.name,
+            award: lang === "zh" ? "最佳進步獎" : "Most Improved Award",
+            citation: lang === "zh"
+              ? `在 ${year.label} ${subjectDisplayName} ${cls.name} 的評估表現中，展現最顯著的持續進步，榮獲`
+              : `for demonstrating the strongest sustained improvement in ${year.label} ${subjectDisplayName} ${cls.name}, earning the`,
+            result: lang === "zh"
+              ? `${candidate.first.assessment.code || candidate.first.assessment.title} ${candidate.first.percentage}% → ${candidate.latest.assessment.code || candidate.latest.assessment.title} ${candidate.latest.percentage}% · 提升 ${candidate.improvement} 個百分點`
+              : `${candidate.first.assessment.code || candidate.first.assessment.title} ${candidate.first.percentage}% → ${candidate.latest.assessment.code || candidate.latest.assessment.title} ${candidate.latest.percentage}% · Improved by ${candidate.improvement} percentage points`,
+            scopeDetail: `${certificateScope} · ${lang === "zh" ? "至少兩項正常完成評估；以最早及最近成績比較" : "At least two normal completed assessments; earliest-to-latest comparison"}`,
+          }))
+        : diligenceRecipients.map(student => ({
+            student,
+            name: lang === "zh" && student.nameCht ? student.nameCht : student.name,
+            award: lang === "zh" ? "勤奮獎" : "Diligence Award",
+            citation: lang === "zh"
+              ? `在 ${year.label} ${subjectDisplayName} ${cls.name} 的評估中，持續準時完成學習要求，榮獲`
+              : `for consistently completing all learning requirements on time in ${year.label} ${subjectDisplayName} ${cls.name}, earning the`,
+            result: lang === "zh"
+              ? `準時正常完成 ${statusAssessments.length} 項已開始評估 · 準時完成率 100%`
+              : `Completed ${statusAssessments.length} started assessments normally and on time · 100% on-time completion`,
+            scopeDetail: `${certificateScope} · ${lang === "zh" ? "ABS、遲交、欠交及未完成紀錄不符合資格" : "ABS, late, missing and incomplete records are not eligible"}`,
+          }));
+
+    if (recipients.length === 0) {
+      const message = awardType === "improvement"
+        ? (lang === "zh" ? "暫未有至少兩項正常完成評估並錄得正向進步的學生。" : "No student has at least two normal completed assessments with a positive improvement yet.")
+        : awardType === "diligence"
+          ? (lang === "zh" ? "暫未有在所選範圍內全部準時正常完成的學生。" : "No student has completed every selected assessment normally and on time yet.")
+          : (lang === "zh" ? "暫未有可產生獎狀的正常完成排行榜成績。" : "There are no eligible completed ranking results to certificate yet.");
+      toast.error(message);
+      return;
+    }
+
+    const certificateHeading = awardType === "leaderboard"
+      ? (lang === "zh" ? "班級優異成績獎狀" : "Certificate of Achievement")
+      : awardType === "improvement"
+        ? (lang === "zh" ? "班級最佳進步獎狀" : "Most Improved Certificate")
+        : (lang === "zh" ? "班級勤奮獎狀" : "Diligence Certificate");
+    const documentTitle = awardType === "leaderboard"
+      ? (lang === "zh" ? "班級獎狀" : "Class Certificates")
+      : awardType === "improvement"
+        ? (lang === "zh" ? "最佳進步獎" : "Most Improved Awards")
+        : (lang === "zh" ? "勤奮獎" : "Diligence Awards");
+    const certificates = recipients.map(recipient => {
+      const recognition = getCertificateTopicRecognition(recipient.student.id, statusAssessments, certificateTopics, lang);
       const recognitionMarkup = recognition
         ? `<div style="margin:4mm auto 0;max-width:160mm;padding:2.2mm 5mm;border-radius:999px;background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a;font-size:11px;font-weight:700"><span>${lang === "zh" ? "專長課題稱號" : "Specialty Topic Recognition"}: ${escapeHtml(lang === "zh" ? recognition.titleZh : recognition.titleEn)}</span><span style="margin:0 5px;color:#93c5fd">•</span><span style="font-weight:500">${escapeHtml(recognition.topicName)} · ${recognition.percentage}%</span></div>`
         : "";
       const signatureMarkup = signatureImageUrl
         ? `<img src="${escapeHtml(signatureImageUrl)}" alt="${lang === "zh" ? "教師簽名" : "Teacher signature"}" style="display:block;height:16mm;max-width:56mm;object-fit:contain;margin:0 auto 1mm" />`
         : `<div style="height:17mm"></div>`;
-      return `<section class="certificate"><div class="ornament top-left">✦</div><div class="ornament top-right">✦</div><div class="inner"><div class="kicker">${lang === "zh" ? "數學成績分析系統" : "MATHS PERFORMANCE ANALYTICS"}</div><h1>${lang === "zh" ? "班級優異成績獎狀" : "Certificate of Achievement"}</h1><p class="presented">${lang === "zh" ? "謹此頒發予" : "This certificate is proudly presented to"}</p><h2>${escapeHtml(row.name)}</h2><p class="classno">${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(row.student.classNo)}</p><p class="citation">${lang === "zh" ? `在 ${escapeHtml(year.label)} ${escapeHtml(subjectDisplayName)} ${escapeHtml(cls.name)} 的整體加權成績中，榮獲` : `for achieving outstanding performance in the overall weighted results for ${escapeHtml(year.label)} ${escapeHtml(subjectDisplayName)} ${escapeHtml(cls.name)}, earning the award of`}</p><div class="award">${escapeHtml(award(row.rank))}</div><p class="result">${lang === "zh" ? `全班第 ${row.rank} 名 · 整體加權 ${row.total}%` : `Rank ${row.rank} in class · Overall weighted result ${row.total}%`}</p>${recognitionMarkup}<p class="scope">${escapeHtml(scope)} · ${escapeHtml(scheme?.label || (lang === "zh" ? "現行加權方案" : "Current weighting scheme"))}</p><div class="signatures"><div><div style="height:18mm;display:flex;align-items:flex-end;justify-content:center">${signatureMarkup}</div><span></span><p style="font-weight:700;color:#334155">${escapeHtml(signerName)}</p><p>${lang === "zh" ? "科任老師" : "Subject Teacher"}</p></div><div><div style="height:18mm"></div><span></span><p>${lang === "zh" ? "日期" : "Date"}: ${escapeHtml(date)}</p></div></div></div></section>`;
+      return `<section class="certificate"><div class="ornament top-left">✦</div><div class="ornament top-right">✦</div><div class="inner"><div class="kicker">${lang === "zh" ? "數學成績分析系統" : "MATHS PERFORMANCE ANALYTICS"}</div><h1>${escapeHtml(certificateHeading)}</h1><p class="presented">${lang === "zh" ? "謹此頒發予" : "This certificate is proudly presented to"}</p><h2>${escapeHtml(recipient.name)}</h2><p class="classno">${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(recipient.student.classNo)}</p><p class="citation">${escapeHtml(recipient.citation)}</p><div class="award">${escapeHtml(recipient.award)}</div><p class="result">${escapeHtml(recipient.result)}</p>${recognitionMarkup}<p class="scope">${escapeHtml(recipient.scopeDetail)}</p><div class="signatures"><div><div style="height:18mm;display:flex;align-items:flex-end;justify-content:center">${signatureMarkup}</div><span></span><p style="font-weight:700;color:#334155">${escapeHtml(signerName)}</p><p>${lang === "zh" ? "科任老師" : "Subject Teacher"}</p></div><div><div style="height:18mm"></div><span></span><p>${lang === "zh" ? "日期" : "Date"}: ${escapeHtml(date)}</p></div></div></div></section>`;
     }).join("");
     const printWindow = window.open("", "_blank");
     if (!printWindow) { toast.error(lang === "zh" ? "無法開啟獎狀視窗，請允許彈出視窗。" : "Unable to open the certificate window. Please allow popups."); return; }
-    printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(cls.name)} — ${lang === "zh" ? "班級獎狀" : "Class Certificates"}</title><style>
+    printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(cls.name)} — ${escapeHtml(documentTitle)}</title><style>
       *{box-sizing:border-box}body{margin:0;background:#e2e8f0;font-family:Arial,'Microsoft JhengHei','PingFang TC',sans-serif;color:#172554}.certificate{width:297mm;height:210mm;position:relative;page-break-after:always;padding:12mm;background:linear-gradient(135deg,#312e81,#4f46e5 48%,#f59e0b);overflow:hidden}.certificate:last-child{page-break-after:auto}.certificate:before,.certificate:after{content:"";position:absolute;border:2px solid rgba(255,255,255,.6);inset:7mm}.certificate:after{inset:11mm;border-color:rgba(254,243,199,.85)}.inner{position:relative;z-index:1;height:100%;padding:19mm 26mm;text-align:center;background:#fffdf5;border:3px solid #fbbf24;box-shadow:inset 0 0 0 7px #fff7d6}.kicker{font-size:11px;letter-spacing:.18em;font-weight:800;color:#4338ca}.inner h1{margin:7mm 0 4mm;font-size:31px;color:#312e81;letter-spacing:.06em}.presented{margin:0;color:#64748b;font-size:13px}.inner h2{margin:5mm 0 1mm;font-size:34px;color:#1e3a8a}.classno{margin:0;color:#64748b;font-size:12px}.citation{max-width:190mm;margin:7mm auto 3mm;font-size:13px;line-height:1.7;color:#334155}.award{display:inline-block;padding:3mm 10mm;border-radius:999px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;font-size:22px;font-weight:900;letter-spacing:.08em;box-shadow:0 4px 0 #92400e}.result{margin:4mm 0 1mm;font-size:15px;font-weight:800;color:#047857}.scope{margin:0;font-size:11px;color:#64748b}.signatures{display:flex;justify-content:space-between;gap:35mm;margin:12mm auto 0;max-width:180mm}.signatures div{width:65mm;text-align:center}.signatures span{display:block;border-top:1px solid #64748b}.signatures p{margin:2mm 0 0;font-size:10px;color:#64748b}.ornament{position:absolute;z-index:2;color:#fde68a;font-size:31px}.top-left{top:15mm;left:20mm}.top-right{top:15mm;right:20mm}@media print{@page{size:A4 landscape;margin:0}body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}.certificate{width:297mm;height:210mm;margin:0}}
     </style></head><body>${certificates}<script>window.onload=function(){window.print()}<\/script></body></html>`);
     printWindow.document.close();
@@ -3306,7 +3390,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     <div className="h-full overflow-y-auto p-4 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="text-xl font-bold text-slate-800">{lang === "zh" ? "統測/大考總表" : "Summary Table"} — {cls.name}</h2>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
             {(["all", "ca", "exam"] as const).map(f => (
               <button key={f} onClick={() => { setSummaryFilter(f); if (f !== "ca") setSummaryCAFilter("all"); }}
@@ -3319,7 +3403,9 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
           <Button size="sm" variant="outline" onClick={handleExportExcel} className="gap-1.5 border-green-300 text-green-700 hover:bg-green-50"><Download className="w-4 h-4" />{lang === "zh" ? "匯出 Excel" : "Export Excel"}</Button>
           <Button size="sm" variant="outline" onClick={handlePrint} className="gap-1.5 border-purple-300 text-purple-700 hover:bg-purple-50"><Printer className="w-4 h-4" />{lang === "zh" ? "列印/PDF" : "Print / PDF"}</Button>
           <Button size="sm" variant="outline" onClick={handleExportLeaderboardPDF} disabled={rankedOverallLeaderboard.length === 0} className="gap-1.5 border-violet-300 text-violet-700 hover:bg-violet-50"><FileText className="w-4 h-4" />{lang === "zh" ? "排行榜 PDF" : "Ranking PDF"}</Button>
-          <Button size="sm" variant="outline" onClick={handleExportLeaderboardCertificates} disabled={rankedOverallLeaderboard.length === 0} className="gap-1.5 border-amber-300 text-amber-800 hover:bg-amber-50"><GraduationCap className="w-4 h-4" />{lang === "zh" ? "班級獎狀 PDF" : "Class Certificates"}</Button>
+          <Button size="sm" variant="outline" onClick={() => handleExportAwardCertificates("leaderboard")} disabled={rankedOverallLeaderboard.length === 0} className="gap-1.5 border-amber-300 text-amber-800 hover:bg-amber-50"><GraduationCap className="w-4 h-4" />{lang === "zh" ? "排名獎狀 PDF" : "Ranking Certificates"}</Button>
+          <Button size="sm" variant="outline" onClick={() => handleExportAwardCertificates("improvement")} disabled={bestImprovementRecipients.length === 0} title={bestImprovementRecipients.length === 0 ? (lang === "zh" ? "需要至少兩項正常完成評估及正向進步" : "Requires at least two normal completed assessments and positive improvement") : undefined} className="gap-1.5 border-emerald-300 text-emerald-800 hover:bg-emerald-50"><TrendingUp className="w-4 h-4" />{lang === "zh" ? "最佳進步獎 PDF" : "Most Improved PDF"}</Button>
+          <Button size="sm" variant="outline" onClick={() => handleExportAwardCertificates("diligence")} disabled={diligenceRecipients.length === 0} title={diligenceRecipients.length === 0 ? (lang === "zh" ? "需要全部已開始評估均準時正常完成" : "Requires normal, on-time completion for every started assessment") : undefined} className="gap-1.5 border-sky-300 text-sky-800 hover:bg-sky-50"><Check className="w-4 h-4" />{lang === "zh" ? "勤奮獎 PDF" : "Diligence PDF"}</Button>
           <Button size="sm" onClick={handleBulkExportPDF} className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white"><FileText className="w-4 h-4" />{lang === "zh" ? "全班 PDF 報告" : "All Students PDF"}</Button>
         </div>
       </div>
