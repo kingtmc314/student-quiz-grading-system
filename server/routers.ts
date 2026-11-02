@@ -6,7 +6,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { storagePut } from "./storage";
+import { storageGetSignedUrl, storagePut } from "./storage";
 import { getOwnStudentProfile } from "./studentProfile";
 
 const usernameSchema = z.string().trim().min(3, "帳戶名稱最少 3 個字元").max(64, "帳戶名稱最多 64 個字元").regex(/^[a-zA-Z0-9._-]+$/, "帳戶名稱只可包含英文字母、數字、句點、底線或連字號");
@@ -132,6 +132,16 @@ export const appRouter = router({
     mine: protectedProcedure.query(async ({ ctx }) => {
       assertTeacherOrAdmin(ctx.user);
       return db.getTeacherCertificateSignature(ctx.user.id);
+    }),
+    /**
+     * Returns a short-lived direct object URL only when a teacher is about to
+     * print. This bypasses the browser's extra redirect hop in a print popup.
+     */
+    printUrl: protectedProcedure.query(async ({ ctx }) => {
+      assertTeacherOrAdmin(ctx.user);
+      const signature = await db.getTeacherCertificateSignature(ctx.user.id);
+      if (!signature?.signatureKey) return { url: null } as const;
+      return { url: await storageGetSignedUrl(signature.signatureKey) } as const;
     }),
     save: protectedProcedure.input(certificateSignatureSettingsSchema).mutation(async ({ ctx, input }) => {
       assertTeacherOrAdmin(ctx.user);

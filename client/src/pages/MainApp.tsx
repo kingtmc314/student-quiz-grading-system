@@ -43,7 +43,7 @@ import { parseMarkSheetText, validateMarkSheet, totalMaxMarks } from "@/lib/mark
 import { buildMarkSheetCSV, downloadCSV } from "@/lib/exportUtils";
 import type { Teacher, AssessmentNature, WeightingScheme, Topic, Term, MarkItem, ScoreEntry, Assessment, Student, AssignmentSubmissionStatus } from "@/contexts/DataContext";
 
-const APP_VERSION = "v1.36.0";
+const APP_VERSION = "v1.36.1";
 
 type AssessmentDisplayItem = {
   id: string;
@@ -2815,6 +2815,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
   const [summaryCAFilter, setSummaryCAFilter] = useState<string>("all");
   const [summaryStudentFilter, setSummaryStudentFilter] = useState<"all" | "absent" | "missing" | "late" | "pending">("all");
   const [collapsedTerms, setCollapsedTerms] = useState<Set<string>>(new Set());
+  const trpcUtils = trpc.useUtils();
   const { data: certificateSignature } = trpc.certificateSignature.mine.useQuery(undefined, { retry: false });
 
   const toggleTerm = (term: string) => {
@@ -3116,7 +3117,7 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
     printWindow.document.close();
   };
 
-  const handleExportAwardCertificates = (awardType: "leaderboard" | "improvement" | "diligence") => {
+  const handleExportAwardCertificates = async (awardType: "leaderboard" | "improvement" | "diligence") => {
     type CertificateRecipient = {
       student: Student;
       name: string;
@@ -3130,7 +3131,6 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
     const date = new Date().toLocaleDateString(lang === "zh" ? "zh-HK" : "en-GB", { year: "numeric", month: "long", day: "numeric" });
-    const signatureImageUrl = certificateSignature?.signatureUrl ? new URL(certificateSignature.signatureUrl, window.location.origin).toString() : "";
     const signerName = certificateSignature?.signerName?.trim() || (lang === "zh" ? "科任老師" : "Subject Teacher");
     const leaderboardAward = (rank: number) => rank === 1 ? (lang === "zh" ? "全班總冠軍" : "Class Champion") : rank === 2 ? (lang === "zh" ? "菁英榜眼" : "Elite Runner-up") : (lang === "zh" ? "卓越新星" : "Excellence Star");
     const recipients: CertificateRecipient[] = awardType === "leaderboard"
@@ -3190,6 +3190,25 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
       : awardType === "improvement"
         ? (lang === "zh" ? "最佳進步獎" : "Most Improved Awards")
         : (lang === "zh" ? "勤奮獎" : "Diligence Awards");
+    // Open synchronously to preserve the browser's user-gesture permission;
+    // then obtain a fresh direct object URL for the print popup.
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      toast.error(lang === "zh" ? "無法開啟獎狀視窗，請允許彈出視窗。" : "Unable to open the certificate window. Please allow popups.");
+      return;
+    }
+    let signatureImageUrl = "";
+    if (certificateSignature?.signatureKey) {
+      try {
+        const signature = await trpcUtils.certificateSignature.printUrl.fetch();
+        signatureImageUrl = signature.url ?? "";
+      } catch (error) {
+        console.error("[Certificate] Unable to obtain printable signature URL", error);
+        printWindow.close();
+        toast.error(lang === "zh" ? "暫時未能載入教師簽名，請稍後再試。" : "The teacher signature could not be loaded. Please try again.");
+        return;
+      }
+    }
     const certificates = recipients.map(recipient => {
       const recognition = getCertificateTopicRecognition(recipient.student.id, statusAssessments, certificateTopics, lang);
       const recognitionMarkup = recognition
@@ -3200,8 +3219,6 @@ function SummaryTab({ yearId, subjectId, classId }: { yearId: string; subjectId:
         : `<div style="height:17mm"></div>`;
       return `<section class="certificate"><div class="ornament top-left">✦</div><div class="ornament top-right">✦</div><div class="inner"><div class="kicker">${lang === "zh" ? "數學成績分析系統" : "MATHS PERFORMANCE ANALYTICS"}</div><h1>${escapeHtml(certificateHeading)}</h1><p class="presented">${lang === "zh" ? "謹此頒發予" : "This certificate is proudly presented to"}</p><h2>${escapeHtml(recipient.name)}</h2><p class="classno">${lang === "zh" ? "班號" : "Class No."}: ${escapeHtml(recipient.student.classNo)}</p><p class="citation">${escapeHtml(recipient.citation)}</p><div class="award">${escapeHtml(recipient.award)}</div><p class="result">${escapeHtml(recipient.result)}</p>${recognitionMarkup}<p class="scope">${escapeHtml(recipient.scopeDetail)}</p><div class="signatures"><div><div style="height:18mm;display:flex;align-items:flex-end;justify-content:center">${signatureMarkup}</div><span></span><p style="font-weight:700;color:#334155">${escapeHtml(signerName)}</p><p>${lang === "zh" ? "科任老師" : "Subject Teacher"}</p></div><div><div style="height:18mm"></div><span></span><p>${lang === "zh" ? "日期" : "Date"}: ${escapeHtml(date)}</p></div></div></div></section>`;
     }).join("");
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) { toast.error(lang === "zh" ? "無法開啟獎狀視窗，請允許彈出視窗。" : "Unable to open the certificate window. Please allow popups."); return; }
     printWindow.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(cls.name)} — ${escapeHtml(documentTitle)}</title><style>
       *{box-sizing:border-box}body{margin:0;background:#e2e8f0;font-family:Arial,'Microsoft JhengHei','PingFang TC',sans-serif;color:#172554}.certificate{width:297mm;height:210mm;position:relative;page-break-after:always;padding:12mm;background:linear-gradient(135deg,#312e81,#4f46e5 48%,#f59e0b);overflow:hidden}.certificate:last-child{page-break-after:auto}.certificate:before,.certificate:after{content:"";position:absolute;border:2px solid rgba(255,255,255,.6);inset:7mm}.certificate:after{inset:11mm;border-color:rgba(254,243,199,.85)}.inner{position:relative;z-index:1;height:100%;padding:19mm 26mm;text-align:center;background:#fffdf5;border:3px solid #fbbf24;box-shadow:inset 0 0 0 7px #fff7d6}.kicker{font-size:11px;letter-spacing:.18em;font-weight:800;color:#4338ca}.inner h1{margin:7mm 0 4mm;font-size:31px;color:#312e81;letter-spacing:.06em}.presented{margin:0;color:#64748b;font-size:13px}.inner h2{margin:5mm 0 1mm;font-size:34px;color:#1e3a8a}.classno{margin:0;color:#64748b;font-size:12px}.citation{max-width:190mm;margin:7mm auto 3mm;font-size:13px;line-height:1.7;color:#334155}.award{display:inline-block;padding:3mm 10mm;border-radius:999px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;font-size:22px;font-weight:900;letter-spacing:.08em;box-shadow:0 4px 0 #92400e}.result{margin:4mm 0 1mm;font-size:15px;font-weight:800;color:#047857}.scope{margin:0;font-size:11px;color:#64748b}.signatures{display:flex;justify-content:space-between;gap:35mm;margin:12mm auto 0;max-width:180mm}.signatures div{width:65mm;text-align:center}.signatures span{display:block;border-top:1px solid #64748b}.signatures p{margin:2mm 0 0;font-size:10px;color:#64748b}.ornament{position:absolute;z-index:2;color:#fde68a;font-size:31px}.top-left{top:15mm;left:20mm}.top-right{top:15mm;right:20mm}@media print{@page{size:A4 landscape;margin:0}body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}.certificate{width:297mm;height:210mm;margin:0}}
     </style></head><body>${certificates}<script>window.onload=function(){window.print()}<\/script></body></html>`);
