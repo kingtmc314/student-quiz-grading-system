@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { buildSectionAnalysis, type SectionAnalysis } from "../shared/sectionAnalysis";
 
 const SUPABASE_URL = "https://mwhppdxrfekyazcliqcc.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im13aHBwZHhyZmVreWF6Y2xpcWNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwODg2MzEsImV4cCI6MjA5NjY2NDYzMX0.zIhEw3ItdEqnq_PWeGA-Qwho27PsjKNP96vQuWVj_J8";
@@ -43,6 +44,7 @@ type StudentAssessment = {
   /** Named public leaderboard approved by the teacher; excludes account data. */
   classBenchmark: ClassBenchmark | null;
   questions: StudentQuestion[];
+  sections: SectionAnalysis[];
 };
 
 type TopicSummary = {
@@ -189,10 +191,34 @@ export async function getOwnStudentProfile(account: LocalStudentAccount) {
     const nature = natureById.get(String(assessment.nature_id));
     const assessmentId = String(assessment.id);
     const studentId = String(ownStudent.id);
-    const questions = (marksByAssessment.get(assessmentId) ?? [])
-      .filter(item => !Boolean(item.is_section))
+    const markSheet = [...(marksByAssessment.get(assessmentId) ?? [])]
       .sort((a, b) => asNumber(a.sort_order) - asNumber(b.sort_order));
+    const questions = markSheet.filter(item => !Boolean(item.is_section));
     const ownCalculated = calculateAssessment(assessmentId, studentId, questions, scoresByAssessmentStudent, absentFlagSet, assignmentStatuses);
+
+    const sections = buildSectionAnalysis(
+      markSheet.map(item => ({ id: String(item.id), label: String(item.label), maxMark: asNumber(item.max_mark), isSection: Boolean(item.is_section) })),
+      (studentsByClassId.get(String(classRow.id)) ?? []).map(student => {
+        const entryStudentId = String(student.id);
+        const entryKey = `${assessmentId}::${entryStudentId}`;
+        return {
+          studentId: entryStudentId,
+          scores: (scoresByAssessmentStudent.get(entryKey) ?? []).map(score => ({ itemId: String(score.mark_item_id), score: numericScore(score.value) })),
+          isAbsent: absentFlagSet.has(entryKey),
+          assignmentStatus: assignmentStatuses[entryKey],
+        };
+      }),
+      studentId,
+      MINIMUM_PEER_COUNT,
+    ).map(section => ({
+      ...section,
+      // Student section analysis exposes aggregate averages only, never peer
+      // extremes or participant counts (including below the privacy threshold).
+      highest: null,
+      lowest: null,
+      participantCount: 0,
+      peerCount: section.average !== null ? section.peerCount : 0,
+    }));
 
     // Rankings include normal, fully completed work only; ABS, late, missing and
     // incomplete entries remain excluded from class comparison.
@@ -317,6 +343,7 @@ export async function getOwnStudentProfile(account: LocalStudentAccount) {
       pct: ownCalculated.pct,
       classBenchmark,
       questions: questionDetails,
+      sections,
     });
   }
 
